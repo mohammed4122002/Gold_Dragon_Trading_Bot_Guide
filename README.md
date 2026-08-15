@@ -75,9 +75,10 @@ python -m src.main run --once    # دورة واحدة (تجريبية)
 │   ├── strategies/             البوابات: الجلسات، الأخبار، الارتباط، السيكولوجيا
 │   ├── infra/                  الوسيط، مصادر البيانات، السجلات، الإشعارات، التخزين
 │   │   ├── live_feed.py        بيانات حية عبر HTTP (Yahoo / Twelve Data)
+│   │   ├── metaapi.py          محوّل MetaApi.cloud (تنفيذ + شموع)
 │   │   └── health.py           صفحة مراقبة ونقطة فحص صحي
 │   └── models/                 POI / Signal / Trade
-├── tests/                      116 اختباراً
+├── tests/                      143 اختباراً
 └── scripts/make_sample_data.py توليد CSV تجريبي
 ```
 
@@ -130,7 +131,7 @@ export GD_RISK__RISK_PER_TRADE=0.005
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 116 اختباراً
+pytest -q          # 143 اختباراً
 ruff check src tests scripts
 ```
 
@@ -172,6 +173,7 @@ HTTP + تحليل كامل + تنفيذ ورقي + إشعارات Telegram + ص�
 |---|---|---|
 | `yahoo` | لا يحتاج | XAUUSD=X + DXY/US10Y/VIX/SPX للارتباط |
 | `twelvedata` | `GD_TWELVEDATA_KEY` | أدق، ~800 طلب/يوم مجاناً |
+| `metaapi` | `GD_METAAPI_TOKEN` + `GD_METAAPI_ACCOUNT_ID` | حساب MT5 حقيقي/تجريبي من أي نظام |
 | `mt5` | — | Windows فقط، للتنفيذ الحقيقي |
 | `csv` / `synthetic` | — | للاختبار والـ Backtest |
 
@@ -198,6 +200,7 @@ python -m src.main run --live      # يطلب كتابة LIVE للتأكيد
 ### أوامر التشغيل اليومي
 
 ```bash
+python -m src.main metaapi               # فحص اتصال MetaApi قبل التشغيل
 python -m src.main psych --state calm    # إعلان الحالة النفسية (تنتهي بعد 12 ساعة)
 python -m src.main report                # الأداء + الذاكرة التكيفية
 python -m src.main kill --reset          # فكّ Kill Switch يدوياً

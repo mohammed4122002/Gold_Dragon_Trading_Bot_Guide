@@ -87,12 +87,23 @@ def build_symbol_spec(config: Any) -> SymbolSpec:
 
 def build_broker(config: Any, force_paper: bool = False) -> Broker:
     spec = build_symbol_spec(config)
-    if force_paper or config.dry_run:
+    provider = str(config.get("broker.provider", "auto"))
+
+    if force_paper or provider == "paper" or (provider == "auto" and config.dry_run):
         return PaperBroker(
             spec,
             balance=float(config.get("broker.paper_balance", 1000.0)),
             spread=float(config.get("broker.paper_spread", 0.20)),
         )
+
+    if provider == "metaapi":
+        from .infra.metaapi import MetaApiBroker, build_client
+        return MetaApiBroker(
+            spec, build_client(config),
+            magic=int(config.get("broker.magic", 234000)),
+            slippage_points=int(config.get("broker.slippage_points", 20)),
+        )
+
     return MT5Broker(
         spec,
         login=int(config.secret("GD_MT5_LOGIN", required=True) or 0),
@@ -274,6 +285,89 @@ def cmd_kill(config: Any, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_metaapi(config: Any, args: argparse.Namespace) -> int:
+    """فحص اتصال MetaApi قبل أي تشغيل حقيقي.
+
+    الغرض: كشف أي اختلاف بين ما يتوقعه الكود وما تعيده الخدمة فعلاً،
+    قبل أن يُكتشف الاختلاف بأمر تنفيذ فاشل أو حجم مركز خاطئ.
+    """
+    from .infra.metaapi import MetaApiFeed, build_client
+
+    print(BANNER)
+    client = build_client(config)
+    symbol = config.symbol
+    failures = 0
+
+    def step(label: str, action: Any) -> Any:
+        nonlocal failures
+        try:
+            value = action()
+        except Exception as exc:
+            failures += 1
+            print(f"  ❌ {label}\n     {exc}")
+            return None
+        print(f"  ✅ {label}")
+        return value
+
+    print(f"\nالمنطقة: {client.region} | الحساب: {client.account_id[:8]}…\n")
+
+    state = step("حالة الحساب (provisioning)", client.account_state)
+    if state:
+        print(f"     state={state.get('state')} | "
+              f"connection={state.get('connectionStatus')} | "
+              f"platform={state.get('platform')}")
+
+    info = step("بيانات الحساب", client.account_information)
+    if info:
+        print(f"     نوع={info.get('type')} | رصيد={info.get('balance')} "
+              f"{info.get('currency')} | رافعة={info.get('leverage')} | "
+              f"وسيط={info.get('broker')}")
+        if str(info.get("type", "")).upper().find("DEMO") < 0:
+            print("     ⚠️  هذا لا يبدو حساباً تجريبياً — تأكد قبل المتابعة")
+
+    spec = step(f"مواصفات {symbol}", lambda: client.symbol_specification(symbol))
+    if spec:
+        print(f"     contractSize={spec.get('contractSize')} | "
+              f"minVolume={spec.get('minVolume')} | "
+              f"volumeStep={spec.get('volumeStep')} | digits={spec.get('digits')}")
+        expected = float(config.get("broker.contract_size", 100))
+        actual = spec.get("contractSize")
+        if actual is not None and float(actual) != expected:
+            print(f"     ⚠️  contract_size في الإعدادات {expected} ويعطيك الوسيط "
+                  f"{actual} — سيُعتمد رقم الوسيط، لكن راجع settings.yaml")
+
+    price = step("السعر اللحظي", lambda: client.current_price(symbol))
+    if price:
+        bid, ask = price.get("bid"), price.get("ask")
+        print(f"     bid={bid} ask={ask} | سبريد={float(ask or 0) - float(bid or 0):.2f}$")
+
+    bars = step("الشموع التاريخية (M15)",
+                lambda: MetaApiFeed(client, symbol).get_bars("M15", 120))
+    if bars is not None:
+        print(f"     {len(bars)} شمعة | آخر إغلاق {bars['close'].iloc[-1]:.2f} "
+              f"@ {bars['time'].iloc[-1]}")
+
+    step("المراكز المفتوحة", client.positions)
+
+    correlation = {k: v for k, v in (config.get("metaapi_correlation") or {}).items() if v}
+    if correlation:
+        data = MetaApiFeed(client, symbol, correlation).get_correlation_data()
+        print(f"  {'✅' if data else '⚠️ '} أصول الارتباط المتاحة: "
+              f"{list(data) or 'لا شيء — البوابة ستُحيّد'}")
+
+    if failures:
+        print(f"\n❌ فشل {failures} فحص — لا تُشغّل قبل حلّها.")
+        print("   راجع docs/DEPLOY_RAILWAY.md قسم MetaApi، وتحقق من التوثيق:")
+        print("   https://metaapi.cloud/docs/client/restApi/")
+        return 1
+
+    print("\n✅ كل الفحوص نجحت. الخطوة التالية:")
+    print("   GD_BOT__DRY_RUN=false GD_BOT__FEED=metaapi "
+          "GD_BROKER__PROVIDER=metaapi python -m src.main run --live")
+    print(f"\n{DISCLAIMER}")
+    return 0
+
+
 def cmd_report(config: Any, args: argparse.Namespace) -> int:
     logger = DataLogger(config.path("storage.database"))
     stats = logger.summary()
@@ -327,6 +421,10 @@ def build_parser() -> argparse.ArgumentParser:
     kill.add_argument("--note", default="")
 
     sub.add_parser("report", help="ملخص الأداء والذاكرة التكيفية")
+
+    metaapi = sub.add_parser("metaapi", help="فحص اتصال MetaApi.cloud")
+    metaapi.add_argument("--check", action="store_true", default=True,
+                         help="تشغيل كل الفحوص (افتراضي)")
     return parser
 
 
@@ -338,6 +436,7 @@ COMMANDS = {
     "psych": cmd_psych,
     "kill": cmd_kill,
     "report": cmd_report,
+    "metaapi": cmd_metaapi,
 }
 
 

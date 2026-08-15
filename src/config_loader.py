@@ -167,16 +167,27 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("gold_dragon.min_acs يجب أن يكون بين 0 و 10")
 
     feed = str(cfg.get("bot.feed", "synthetic"))
-    if feed not in {"mt5", "csv", "synthetic", "yahoo", "twelvedata"}:
+    if feed not in {"mt5", "metaapi", "csv", "synthetic", "yahoo", "twelvedata"}:
         raise ConfigError(f"bot.feed غير مدعوم: {feed}")
 
-    # التنفيذ الحقيقي عبر MT5 يتطلب بيانات MT5 نفسها — لا مزوّد خارجي.
-    # الخلط بينهما يعني تنفيذ أوامر على أسعار مصدر مختلف عن الوسيط.
-    if not cfg.dry_run and feed != "mt5":
-        raise ConfigError(
-            f"التشغيل الحقيقي (dry_run=false) يتطلب bot.feed=mt5 وليس {feed} — "
-            "لا يجوز تنفيذ أوامر حقيقية بأسعار مزوّد خارجي"
-        )
+    provider = str(cfg.get("broker.provider", "auto"))
+    if provider not in {"auto", "paper", "mt5", "metaapi"}:
+        raise ConfigError(f"broker.provider غير مدعوم: {provider}")
+
+    # التنفيذ الحقيقي يجب أن يقرأ الأسعار من نفس المكان الذي ينفّذ فيه.
+    # تنفيذ أوامر بأسعار مزوّد خارجي = دخول ووقف على سعر غير سعر الوسيط.
+    if not cfg.dry_run:
+        if feed not in {"mt5", "metaapi"}:
+            raise ConfigError(
+                f"التشغيل الحقيقي (dry_run=false) يتطلب bot.feed=mt5 أو metaapi "
+                f"وليس {feed} — لا يجوز تنفيذ أوامر بأسعار مزوّد خارجي"
+            )
+        effective = provider if provider != "auto" else "mt5"
+        if effective != feed:
+            raise ConfigError(
+                f"عدم تطابق: broker.provider={effective} مع bot.feed={feed}. "
+                "يجب أن يكون التنفيذ وقراءة الأسعار من نفس الوسيط"
+            )
 
     if cfg.get("challenge_mode.enabled") and not cfg.get("challenge_mode.accepted_contract"):
         raise ConfigError(

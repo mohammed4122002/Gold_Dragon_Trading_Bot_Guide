@@ -28,6 +28,15 @@ bot:
     M5: 200
 
 broker:
+  # منفّذ الأوامر: auto | paper | mt5 | metaapi
+  #   auto    → paper عند dry_run، وإلا mt5
+  #   paper   → محاكاة داخلية (dry-run / forward test / backtest)
+  #   mt5     → MetaTrader5 مباشرة (Windows فقط)
+  #   metaapi → MetaApi.cloud (يعمل على Linux/سحابة، حساب MT4/MT5 حقيقي أو تجريبي)
+  provider: auto
+  # منطقة حساب MetaApi كما تظهر في لوحتهم
+  metaapi_region: "new-york"
+
   # مواصفات العقد لـ XAUUSD — تحقق منها لدى وسيطك قبل التشغيل الحي
   contract_size: 100        # أونصة لكل 1.00 لوت
   min_lot: 0.01
