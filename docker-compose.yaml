@@ -1,0 +1,21 @@
+services:
+  gold-dragon:
+    build: .
+    container_name: gold_dragon_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # حماية إضافية: الحاوية تعمل تجريبياً ما لم تُغيَّر هذه القيمة صراحةً
+      GD_BOT__DRY_RUN: "true"
+      TZ: UTC
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./state:/app/state
+    healthcheck:
+      test: ["CMD", "python", "-m", "src.main", "doctor"]
+      interval: 5m
+      timeout: 30s
+      retries: 3

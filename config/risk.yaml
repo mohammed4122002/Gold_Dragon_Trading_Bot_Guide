@@ -1,0 +1,63 @@
+# ═══════════════════════════════════════════════════════════════
+#  إعدادات المخاطرة — البند 8 من Gold Dragon Pro v4
+#  كل النسب كسور عشرية: 0.01 = 1%
+# ═══════════════════════════════════════════════════════════════
+
+risk:
+  # المخاطرة الافتراضية للصفقة. البروتوكول القياسي = 1%، والتحدي = 2% (سقف مطلق)
+  risk_per_trade: 0.01
+  max_risk_per_trade: 0.02
+  max_total_risk: 0.04          # مجموع المخاطرة المفتوحة في وقت واحد
+  max_concurrent_positions: 2
+
+  # حدود الإيقاف
+  daily_loss_limit: 0.05        # خسارة يومية 5% → إيقاف حتى اليوم التالي
+  weekly_loss_limit: 0.10       # خسارة يومية 10% → إيقاف أسبوع (البند 9.3)
+  max_drawdown: 0.15            # تجاوزه → إيقاف البوت وإشعار
+  consecutive_losses_lock: 3    # 3 خسارات متتالية → قفل
+  consecutive_losses_lock_hours: 48
+
+  # الحد الأدنى لنسبة المكافأة/المخاطرة (البند 8.3)
+  min_rr:
+    with_trend: 3.0
+    counter_trend: 5.0
+    range: 2.5
+
+  # إدارة الصفقة بعد الدخول (البند 8.2) — النسب من الحجم الأصلي
+  management:
+    # الأهداف بمضاعفات المخاطرة (R). بوابة الحد الأدنى لـ RR تُقاس على TP2،
+    # لذا يجب أن يبقى tp2_r >= min_rr.with_trend وإلا رُفضت كل الصفقات.
+    tp1_r: 1.0
+    tp2_r: 3.0
+    tp3_r: 5.0
+    partial_1_pct: 0.30
+    partial_2_pct: 0.30
+    breakeven_at_r: 1.0
+    breakeven_offset_r: 0.02    # نقل SL إلى Entry ± 2% من المخاطرة
+    trail_after_r: 3.0
+    trail_swing_lookback: 5     # نقل SL خلف آخر Swing على M15
+    sl_buffer_atr: 0.25         # هامش خلف حافة POI/قمة السويپ بنسبة من ATR
+
+kill_switch:
+  enabled: true
+  drawdown_pause: 0.20          # إيقاف 24 ساعة
+  drawdown_pause_hours: 24
+  drawdown_terminate: 0.50      # إنهاء نهائي — يتطلب تدخل بشري
+  daily_loss_terminate: 0.10
+  consecutive_losses_terminate: 5
+  close_positions_on_trigger: true
+  state_file: "state/kill_switch.json"
+
+# وضع التحدي (البند 12) — معطّل افتراضياً، لا يُفعّل إلا بإقرار صريح
+challenge_mode:
+  enabled: false
+  accepted_contract: false      # يجب أن تصبح true يدوياً بعد قراءة عقد التحدي
+  max_capital: 500.0
+  stages:
+    - {name: "Accumulation", from: 100.0, to: 300.0, risk: 0.02,  min_acs: 7.0}
+    - {name: "Acceleration", from: 300.0, to: 600.0, risk: 0.02,  min_acs: 7.0}
+    - {name: "Expansion",    from: 600.0, to: 1000.0, risk: 0.015, min_acs: 8.0}
+  withdraw_at:
+    - {balance: 300.0, amount: 100.0, note: "سحب رأس المال الأصلي — إلزامي"}
+    - {balance: 1000.0, amount: 500.0, note: "سحب نصف الأرباح"}
+  counter_trend_allowed: false

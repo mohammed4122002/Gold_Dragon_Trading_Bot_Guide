@@ -1,0 +1,41 @@
+# ═══════════════════════════════════════════════════════════════
+#  الأدوات المسموح بها — XAU/USD فقط (النطاق الإلزامي، البند 0)
+#  أي رمز خارج allowed يُرفض في وقت التشغيل.
+# ═══════════════════════════════════════════════════════════════
+
+allowed:
+  - XAUUSD
+
+primary: XAUUSD
+
+symbols:
+  XAUUSD:
+    description: "Gold vs US Dollar"
+    digits: 2
+    contract_size: 100
+    quote_currency: USD
+    # أسماء بديلة شائعة لدى الوسطاء — تُطابق تلقائياً عند البحث في MT5
+    aliases: [XAUUSD, GOLD, XAUUSD.m, XAUUSDm, XAUUSD_i, XAUUSD.pro]
+
+# الأصول المرجعية للارتباط — تُقرأ للتحليل فقط، ولا يُتداول عليها إطلاقاً
+correlation_feeds:
+  DXY:
+    description: "US Dollar Index"
+    aliases: [DXY, USDX, USDIDX, "US Dollar Index"]
+    read_only: true
+  US10Y:
+    description: "US 10-Year Treasury Yield"
+    aliases: [US10Y, USTNOTE10, TNX]
+    read_only: true
+  VIX:
+    description: "CBOE Volatility Index"
+    aliases: [VIX, VIXX, VOLX]
+    read_only: true
+  SPX500:
+    description: "S&P 500 Index"
+    aliases: [SPX500, US500, SP500, SPX]
+    read_only: true
+  XAGUSD:
+    description: "Silver vs US Dollar"
+    aliases: [XAGUSD, SILVER, XAGUSD.m]
+    read_only: true
