@@ -45,6 +45,33 @@ DISCLAIMER = (
 )
 
 
+def preflight_storage(config: Any) -> list[str]:
+    """التأكد من أن مسارات الحالة قابلة للكتابة قبل بدء التداول.
+
+    على منصات الحاويات، قرص دائم غير قابل للكتابة يعني أن قفل الـ48 ساعة
+    وقاعدة الصفقات ستُفقد مع كل إعادة نشر. الفشل هنا يجب أن يكون صريحاً
+    ومبكراً، لا أن يُكتشف بعد ثلاث خسارات متتالية.
+    """
+    problems: list[str] = []
+    targets = {
+        "قاعدة البيانات": config.path("storage.database", "data/trades.db"),
+        "ملف السجل": config.path("storage.log_file", "logs/bot.log"),
+        "حالة Kill Switch": config.path("kill_switch.state_file", "state/kill_switch.json"),
+        "الحالة النفسية": config.path(
+            "gold_dragon.psychology_gate.state_file", "state/psychology.json"
+        ),
+    }
+    for label, path in targets.items():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            probe = path.parent / ".write_test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+        except OSError as exc:
+            problems.append(f"{label}: {path.parent} غير قابل للكتابة ({exc})")
+    return problems
+
+
 def build_symbol_spec(config: Any) -> SymbolSpec:
     symbol = config.symbol
     return SymbolSpec(
@@ -110,6 +137,11 @@ def cmd_doctor(config: Any, args: argparse.Namespace) -> int:
           "disabled": "الفلتر معطّل"}.get(calendar_state, calendar_state))
     )
 
+    storage_problems = preflight_storage(config)
+    checks.append(("التخزين الدائم", not storage_problems,
+                   " | ".join(storage_problems) if storage_problems
+                   else f"قابل للكتابة: {config.path('storage.database').parent}"))
+
     notifier = NotificationService(config)
     checks.append(("الإشعارات", True, f"المزوّد: {notifier.provider}"))
 
@@ -171,6 +203,15 @@ def cmd_run(config: Any, args: argparse.Namespace) -> int:
     elif not config.dry_run:
         print("\n⚠️  الإعدادات على وضع حقيقي — استخدم --live للتأكيد الصريح.")
         return 2
+
+    problems = preflight_storage(config)
+    if problems:
+        print("\n❌ التخزين غير قابل للكتابة — أوقفت التشغيل:")
+        for problem in problems:
+            print(f"   • {problem}")
+        print("\n   على Railway: تأكد من تركيب Volume على /data ومن أن "
+              "متغيرات GD_STORAGE__* تشير إليه.")
+        return 4
 
     broker = build_broker(config, force_paper=not args.live)
     feed = build_feed(config)

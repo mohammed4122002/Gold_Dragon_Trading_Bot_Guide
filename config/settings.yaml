@@ -112,6 +112,12 @@ notifications:
   # التوكن ومعرّف المحادثة من البيئة: GD_TELEGRAM_TOKEN / GD_TELEGRAM_CHAT_ID
   min_level: info            # info | warning | critical
 
+# نقطة فحص صحي/مراقبة عبر HTTP. منصات الاستضافة تضبط PORT تلقائياً؛
+# محلياً حدّد health.port لتفعيلها (مثلاً 8080).
+health:
+  enabled: true
+  port: null
+
 storage:
   database: "data/trades.db"
   log_file: "logs/bot.log"

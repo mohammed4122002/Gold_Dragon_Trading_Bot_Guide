@@ -98,6 +98,8 @@ class PositionTracker:
         """جولة إدارة واحدة على كل الصفقات المفتوحة."""
         actions: list[dict[str, Any]] = []
         self.sync_with_broker()
+        if not self.open_trades:
+            return actions  # لا داعي لسؤال الوسيط عن السعر بلا صفقات
 
         try:
             bid, ask = self.broker.tick()

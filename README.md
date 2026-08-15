@@ -74,8 +74,10 @@ python -m src.main run --once    # دورة واحدة (تجريبية)
 │   │   └── gold_dragon_core.py الربط وإنتاج الإشارة
 │   ├── strategies/             البوابات: الجلسات، الأخبار، الارتباط، السيكولوجيا
 │   ├── infra/                  الوسيط، مصادر البيانات، السجلات، الإشعارات، التخزين
+│   │   ├── live_feed.py        بيانات حية عبر HTTP (Yahoo / Twelve Data)
+│   │   └── health.py           صفحة مراقبة ونقطة فحص صحي
 │   └── models/                 POI / Signal / Trade
-├── tests/                      94 اختباراً
+├── tests/                      116 اختباراً
 └── scripts/make_sample_data.py توليد CSV تجريبي
 ```
 
@@ -128,7 +130,7 @@ export GD_RISK__RISK_PER_TRADE=0.005
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 94 اختباراً
+pytest -q          # 116 اختباراً
 ruff check src tests scripts
 ```
 
@@ -148,6 +150,30 @@ python -m src.main backtest --bars 5000 --balance 1000
 قيود الـ Backtest مكتوبة في رأس `src/backtest.py` — اقرأها قبل تصديق أي رقم.
 أهمها: التنفيذ عند إغلاق شمعة M15، وافتراض ضرب SL أولاً عند ملامسة SL و TP
 في الشمعة نفسها.
+
+---
+
+## 🚂 النشر السحابي (Railway) — اختبار أمامي
+
+```bash
+GD_BOT__FEED=yahoo GD_BOT__DRY_RUN=true python -m src.main run
+```
+
+على Railway يعمل البوت في وضع **Forward Test**: بيانات XAU/USD حقيقية عبر
+HTTP + تحليل كامل + تنفيذ ورقي + إشعارات Telegram + صفحة مراقبة على `/`.
+
+**MetaTrader5 لا تعمل على Linux**، لذا لا اتصال بحساب MT5 من Railway. الكود
+يرفض الإقلاع إذا حاولت الجمع بين `dry_run: false` ومصدر بيانات غير MT5.
+
+الدليل الكامل (القرص الدائم، المتغيرات، التحقق، التكلفة، حل المشاكل):
+[`docs/DEPLOY_RAILWAY.md`](docs/DEPLOY_RAILWAY.md)
+
+| مصدر البيانات | المفتاح | الملاحظة |
+|---|---|---|
+| `yahoo` | لا يحتاج | XAUUSD=X + DXY/US10Y/VIX/SPX للارتباط |
+| `twelvedata` | `GD_TWELVEDATA_KEY` | أدق، ~800 طلب/يوم مجاناً |
+| `mt5` | — | Windows فقط، للتنفيذ الحقيقي |
+| `csv` / `synthetic` | — | للاختبار والـ Backtest |
 
 ---
 

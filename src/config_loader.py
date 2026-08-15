@@ -167,8 +167,16 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("gold_dragon.min_acs يجب أن يكون بين 0 و 10")
 
     feed = str(cfg.get("bot.feed", "synthetic"))
-    if feed not in {"mt5", "csv", "synthetic"}:
+    if feed not in {"mt5", "csv", "synthetic", "yahoo", "twelvedata"}:
         raise ConfigError(f"bot.feed غير مدعوم: {feed}")
+
+    # التنفيذ الحقيقي عبر MT5 يتطلب بيانات MT5 نفسها — لا مزوّد خارجي.
+    # الخلط بينهما يعني تنفيذ أوامر على أسعار مصدر مختلف عن الوسيط.
+    if not cfg.dry_run and feed != "mt5":
+        raise ConfigError(
+            f"التشغيل الحقيقي (dry_run=false) يتطلب bot.feed=mt5 وليس {feed} — "
+            "لا يجوز تنفيذ أوامر حقيقية بأسعار مزوّد خارجي"
+        )
 
     if cfg.get("challenge_mode.enabled") and not cfg.get("challenge_mode.accepted_contract"):
         raise ConfigError(
