@@ -39,3 +39,12 @@ correlation_feeds:
     description: "Silver vs US Dollar"
     aliases: [XAGUSD, SILVER, XAGUSD.m]
     read_only: true
+
+# أسماء أصول الارتباط كما يوفّرها وسيطك عبر MetaApi (تختلف بين الوسطاء).
+# اتركها فارغة إن كان وسيطك لا يوفّرها — البوابة تُحيّد ولا تمنع التداول.
+metaapi_correlation:
+  DXY: ""
+  US10Y: ""
+  VIX: ""
+  SPX500: "US500"
+  XAGUSD: "XAGUSD"

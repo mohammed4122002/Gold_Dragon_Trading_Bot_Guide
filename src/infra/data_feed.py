@@ -223,4 +223,18 @@ def build_feed(config: Any) -> DataFeed:
         feeds = config.get("correlation_feeds", {}) or {}
         aliases = {k: v.get("aliases", [k]) for k, v in feeds.items()}
         return MT5Feed(symbol, aliases)
+    if kind == "metaapi":
+        from .metaapi import MetaApiFeed, build_client
+        mapping = {k: v for k, v in (config.get("metaapi_correlation") or {}).items() if v}
+        return MetaApiFeed(build_client(config), symbol, mapping)
+    if kind == "yahoo":
+        # استيراد كسول: لا نُحمّل طبقة الشبكة إلا عند طلبها فعلاً
+        from .live_feed import YahooFeed
+        return YahooFeed(str(config.get("bot.live_symbol", "XAUUSD=X")))
+    if kind == "twelvedata":
+        from .live_feed import TwelveDataFeed
+        return TwelveDataFeed(
+            api_key=str(config.secret("GD_TWELVEDATA_KEY", required=True)),
+            symbol=str(config.get("bot.live_symbol", "XAU/USD")),
+        )
     return SyntheticFeed(symbol)

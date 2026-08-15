@@ -98,6 +98,15 @@ class Broker(ABC):
     @abstractmethod
     def positions(self) -> list[BrokerPosition]: ...
 
+    def realized_pnl(self, ticket: int) -> dict[str, Any] | None:
+        """الربح/الخسارة المحقق لصفقة أُغلقت، إن أمكن للوسيط أن يخبرنا.
+
+        كل وسيط يعرفها من مصدر مختلف (سجل داخلي، صفقات تاريخية، API)،
+        لذلك المتتبّع يسأل عبر هذه الواجهة بدل التنقيب في تفاصيل التنفيذ.
+        القيمة None تعني «لا أعرف» — ولا يجوز تفسيرها كصفر.
+        """
+        return None
+
     def spread(self) -> float:
         bid, ask = self.tick()
         return ask - bid
@@ -249,6 +258,14 @@ class PaperBroker(Broker):
         for pos in self._positions.values():
             pos.profit = self._unrealized(pos)
         return list(self._positions.values())
+
+    def realized_pnl(self, ticket: int) -> dict[str, Any] | None:
+        """تجميع كل الأجزاء المغلقة لنفس التذكرة (إغلاق جزئي + نهائي)."""
+        parts = [c for c in self.closed if c["ticket"] == ticket]
+        if not parts:
+            return None
+        return {"pnl": sum(p["pnl"] for p in parts), "exit": parts[-1]["exit"],
+                "reason": parts[-1]["reason"]}
 
     # محاكاة الشموع ----------------------------------------------------------
     def process_bar(self, high: float, low: float, close: float,
@@ -459,6 +476,22 @@ class MT5Broker(Broker):
     def _raw_position(self, ticket: int) -> Any:
         found = self._api().positions_get(ticket=ticket)
         return found[0] if found else None
+
+    def realized_pnl(self, ticket: int) -> dict[str, Any] | None:
+        """قراءة الصفقات التاريخية (deals) المرتبطة بهذا المركز."""
+        mt5 = self._api()
+        deals = mt5.history_deals_get(position=ticket)
+        if not deals:
+            return None
+        closing = [d for d in deals if d.entry != mt5.DEAL_ENTRY_IN]
+        if not closing:
+            return None
+        return {
+            "pnl": sum(float(d.profit) + float(d.swap) + float(d.commission)
+                       for d in closing),
+            "exit": float(closing[-1].price),
+            "reason": "broker_close",
+        }
 
     def positions(self) -> list[BrokerPosition]:
         mt5 = self._api()

@@ -64,7 +64,7 @@ class PositionTracker:
             trade.closed_at = datetime.now(timezone.utc)
             trade.exit_reason = trade.exit_reason or "broker_close"
 
-            realized = self._realized_from_broker(trade.ticket)
+            realized = self.broker.realized_pnl(trade.ticket)
             if realized is not None:
                 trade.pnl = realized["pnl"]
                 trade.exit_price = realized["exit"]
@@ -79,25 +79,13 @@ class PositionTracker:
             )
         return closed
 
-    def _realized_from_broker(self, ticket: int) -> dict[str, Any] | None:
-        """تجميع الأجزاء المغلقة لصفقة من سجل الوسيط الورقي (إن توفر)."""
-        history = getattr(self.broker, "closed", None)
-        if not history:
-            return None
-        parts = [h for h in history if h["ticket"] == ticket]
-        if not parts:
-            return None
-        return {
-            "pnl": sum(p["pnl"] for p in parts),
-            "exit": parts[-1]["exit"],
-            "reason": parts[-1]["reason"],
-        }
-
     # الإدارة ----------------------------------------------------------------
     def manage(self, df_m15: pd.DataFrame | None = None) -> list[dict[str, Any]]:
         """جولة إدارة واحدة على كل الصفقات المفتوحة."""
         actions: list[dict[str, Any]] = []
         self.sync_with_broker()
+        if not self.open_trades:
+            return actions  # لا داعي لسؤال الوسيط عن السعر بلا صفقات
 
         try:
             bid, ask = self.broker.tick()

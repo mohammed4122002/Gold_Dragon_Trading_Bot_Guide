@@ -11,8 +11,12 @@ bot:
   symbol: "XAUUSD"
   # dry_run = true → لا يُرسل أي أمر حقيقي، كل التنفيذ عبر PaperBroker
   dry_run: true
-  # نمط جلب البيانات: mt5 | csv | synthetic
+  # نمط جلب البيانات: mt5 | metaapi | yahoo | twelvedata | csv | synthetic
   feed: synthetic
+  # رمز الذهب لدى مزوّد البيانات الحية (يختلف عن رمز الوسيط أعلاه)
+  #   yahoo      → XAUUSD=X (فوري) أو GC=F (آجل، سعره يختلف ببضعة دولارات)
+  #   twelvedata → XAU/USD
+  live_symbol: "XAUUSD=X"
   csv_dir: "data"
   scan_interval_seconds: 60
   position_check_seconds: 300
@@ -28,6 +32,15 @@ bot:
     M5: 200
 
 broker:
+  # منفّذ الأوامر: auto | paper | mt5 | metaapi
+  #   auto    → paper عند dry_run، وإلا mt5
+  #   paper   → محاكاة داخلية (dry-run / forward test / backtest)
+  #   mt5     → MetaTrader5 مباشرة (Windows فقط)
+  #   metaapi → MetaApi.cloud (يعمل على Linux/سحابة، حساب MT4/MT5 حقيقي أو تجريبي)
+  provider: auto
+  # منطقة حساب MetaApi كما تظهر في لوحتهم
+  metaapi_region: "new-york"
+
   # مواصفات العقد لـ XAUUSD — تحقق منها لدى وسيطك قبل التشغيل الحي
   contract_size: 100        # أونصة لكل 1.00 لوت
   min_lot: 0.01
@@ -37,6 +50,9 @@ broker:
   max_spread: 0.60          # بالدولار — فوقه تُرفض الصفقة
   slippage_points: 20
   magic: 234000
+  # رصيد وسبريد المحاكاة الورقية (dry-run و forward test)
+  paper_balance: 1000.0
+  paper_spread: 0.20
   # بيانات الدخول تُقرأ من البيئة: GD_MT5_LOGIN / GD_MT5_PASSWORD / GD_MT5_SERVER
   mt5_terminal_path: ""
 
@@ -111,6 +127,12 @@ notifications:
   provider: console          # console | telegram
   # التوكن ومعرّف المحادثة من البيئة: GD_TELEGRAM_TOKEN / GD_TELEGRAM_CHAT_ID
   min_level: info            # info | warning | critical
+
+# نقطة فحص صحي/مراقبة عبر HTTP. منصات الاستضافة تضبط PORT تلقائياً؛
+# محلياً حدّد health.port لتفعيلها (مثلاً 8080).
+health:
+  enabled: true
+  port: null
 
 storage:
   database: "data/trades.db"

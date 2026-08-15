@@ -15,8 +15,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+import pandas as pd
+
 from .core.gold_dragon_core import AnalysisResult
-from .infra.broker import Broker
+from .infra.broker import Broker, PaperBroker
 from .infra.data_logger import DataLogger
 from .infra.logger import get_logger
 from .infra.notification_service import NotificationService
@@ -50,12 +52,18 @@ class GoldDragonBot:
         self._last_position_check = 0.0
         self._last_report_day: str | None = None
         self._last_alerts: set[tuple[int, str]] = set()
+        # آخر شمعة مُرّرت للوسيط الورقي — تمنع إعادة معالجة نفس الشمعة
+        self._last_bar_time: datetime | None = None
+        self.started_at = datetime.now(timezone.utc)
+        self.last_scan: dict[str, Any] | None = None
+        self._health_server: Any = None
 
     # ═══════════════════════════════════════════════════════════════
     def start(self) -> None:
         """الحلقة الرئيسية. تتوقف بأمان عند Ctrl+C أو Kill Switch."""
         self.broker.connect()
         self.is_running = True
+        self._start_health_server()
         mode = "🧪 تجريبي (dry-run)" if self.config.dry_run else "🔴 حقيقي"
         self.notifier.send(
             f"🐉 *Gold Dragon Bot* بدأ التشغيل\nالوضع: {mode}\n"
@@ -78,11 +86,24 @@ class GoldDragonBot:
         finally:
             self.stop()
 
+    def _start_health_server(self) -> None:
+        """تشغيل واجهة المراقبة إن حُدّد منفذ (منصات الاستضافة تضبط PORT)."""
+        import os
+
+        port = os.environ.get("PORT") or self.config.get("health.port")
+        if not port or not self.config.get("health.enabled", True):
+            return
+        from .infra.health import start_health_server
+
+        self._health_server = start_health_server(self, int(port))
+
     def stop(self) -> None:
         if not self.is_running:
             return
         self.is_running = False
         self.notifier.send("🛑 توقف Gold Dragon Bot", level="warning")
+        if self._health_server is not None:
+            self._health_server.shutdown()
         try:
             self.broker.shutdown()
         except Exception as exc:
@@ -102,11 +123,28 @@ class GoldDragonBot:
 
     # ═══════════════════════════════════════════════════════════════
     def scan_market(self) -> dict[str, Any]:
-        balance = self.broker.balance()
-        positions = self.broker.positions()
-
         if self.kill_switch.active:
             return self._outcome("kill_switch", f"Kill Switch نشط: {self.kill_switch.reason}")
+
+        # 1) البيانات والتحليل. القفل الانتقامي يُمرَّر للبوابة النفسية،
+        #    لكننا نُكمل التحليل لأن التقارير والتنبيهات تبقى مفيدة أثناء القفل.
+        result = self.analyzer.analyze(
+            risk_locked=self.risk.is_locked, lock_reason=self.risk.lock_reason
+        )
+        if result is None:
+            return self._outcome("no_data", "تعذّر جلب بيانات صالحة")
+
+        # 2) تقديم الساعة في وضع التنفيذ الورقي، ثم مزامنة ما أغلقه الوسيط.
+        #    يجب أن يسبق قرار المخاطرة حتى يُبنى على رصيد ومراكز حقيقية.
+        self.advance_paper_clock()
+        for trade in self.tracker.sync_with_broker():
+            self.risk.record_result(trade.pnl)
+
+        self.data_logger.log_analysis(result.to_dict())
+        self._emit_alerts(result)
+
+        balance = self.broker.balance()
+        positions = self.broker.positions()
 
         snapshot = self.risk.snapshot(balance)
         triggered = self.kill_switch.auto_check(
@@ -118,22 +156,10 @@ class GoldDragonBot:
             stop_engine=self.stop,
         )
         if triggered:
-            return self._outcome("kill_switch", self.kill_switch.reason)
+            return self._outcome("kill_switch", self.kill_switch.reason, result)
 
         open_risk = self.risk.open_risk_fraction(positions, balance)
         decision = self.risk.can_trade(balance, len(positions), open_risk)
-
-        # نحلّل حتى في حالة القفل: التقارير والتنبيهات تبقى مفيدة، لكن
-        # القفل يُمرَّر للبوابة النفسية فتُسقط الدرجة وتمنع أي تنفيذ.
-        result = self.analyzer.analyze(
-            risk_locked=not decision.allowed, lock_reason=decision.reason
-        )
-        if result is None:
-            return self._outcome("no_data", "تعذّر جلب بيانات صالحة")
-
-        self.data_logger.log_analysis(result.to_dict())
-        self._emit_alerts(result)
-
         if not decision.allowed:
             return self._outcome("risk_blocked", decision.reason, result)
 
@@ -167,6 +193,47 @@ class GoldDragonBot:
         return self._outcome("executed", f"صفقة #{trade.ticket}", result, trade=trade)
 
     # ═══════════════════════════════════════════════════════════════
+    def advance_paper_clock(self) -> list[dict[str, Any]]:
+        """تغذية الوسيط الورقي بشموع السوق الحقيقية (وضع forward test).
+
+        الوسيط الورقي لا يعرف السعر من تلقاء نفسه — نحن من يُقدّم ساعته.
+        نمرّر كل شمعة مكتملة جديدة عبر ``process_bar`` ليُفحص ضرب SL/TP
+        داخلها، فتكون نتائج المحاكاة مطابقة لما كان سيحدث فعلاً.
+
+        لا أثر لهذه الدالة في التشغيل الحقيقي عبر MT5 (الوسيط يُدير أوامره).
+        """
+        broker = self.broker
+        if not isinstance(broker, PaperBroker):
+            return []
+
+        df_m15 = self.analyzer.last_bars.get("M15")
+        if df_m15 is None or df_m15.empty:
+            return []
+
+        last = df_m15.iloc[-1]
+        last_time = pd.Timestamp(last["time"]).to_pydatetime()
+
+        # أول دورة: لا مراكز مفتوحة بعد، ولا معنى لإعادة تشغيل التاريخ كله.
+        # نكتفي بضبط السعر الحالي ونبدأ العدّ من هنا.
+        if self._last_bar_time is None:
+            broker.set_price(float(last["close"]), last_time)
+            self._last_bar_time = last_time
+            return []
+
+        events: list[dict[str, Any]] = []
+        for _, bar in df_m15.iterrows():
+            when = pd.Timestamp(bar["time"]).to_pydatetime()
+            if when <= self._last_bar_time:
+                continue  # شمعة سبق تمريرها
+            events += broker.process_bar(
+                float(bar["high"]), float(bar["low"]), float(bar["close"]), when
+            )
+            self._last_bar_time = when
+
+        # السعر الجاري (شمعة غير مكتملة أو تحديث بين الشموع)
+        broker.set_price(float(last["close"]), last_time)
+        return events
+
     def check_positions(self) -> list[dict[str, Any]]:
         df_m15 = self.analyzer.last_bars.get("M15")
         closed = self.tracker.sync_with_broker()
@@ -205,5 +272,7 @@ class GoldDragonBot:
                  result: AnalysisResult | None = None, **extra: Any) -> dict[str, Any]:
         if status not in {"executed"}:
             log.info("نتيجة الدورة: %s — %s", status, detail)
-        return {"status": status, "detail": detail, "result": result,
-                "at": datetime.now(timezone.utc).isoformat(), **extra}
+        outcome = {"status": status, "detail": detail, "result": result,
+                   "at": datetime.now(timezone.utc).isoformat(), **extra}
+        self.last_scan = outcome
+        return outcome
