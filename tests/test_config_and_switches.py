@@ -132,3 +132,47 @@ def test_spec_from_config_matches_yaml():
     assert isinstance(spec, SymbolSpec)
     assert spec.contract_size == 100.0
     assert spec.min_lot == 0.01
+
+
+# ═══ حراسة تجاوزات البيئة ══════════════════════════════════════════
+def test_documented_env_vars_map_to_real_config_keys():
+    """كل متغير موثّق في .env.railway.example يجب أن يكون له مفتاح فعلي.
+
+    آلية التجاوز لا تُنشئ مفاتيح جديدة — تُعدّل الموجود فقط. لذلك متغير
+    موثّق بلا مفتاح مقابل يُقبل صامتاً ولا يفعل شيئاً، وهو أسوأ من الخطأ
+    الصريح: تظن أنك ضبطت شيئاً ولم تضبطه.
+    """
+    from pathlib import Path
+
+    from src.config_loader import ROOT, load_config
+
+    # هذه أسرار تُقرأ من البيئة مباشرة، لا مفاتيح YAML
+    secrets = {
+        "GD_MT5_LOGIN", "GD_MT5_PASSWORD", "GD_MT5_SERVER",
+        "GD_TELEGRAM_TOKEN", "GD_TELEGRAM_CHAT_ID", "GD_TWELVEDATA_KEY",
+        "GD_METAAPI_TOKEN", "GD_METAAPI_ACCOUNT_ID",
+    }
+    cfg = load_config()
+    missing: list[str] = []
+
+    for file in (".env.railway.example", ".env.example"):
+        path = Path(ROOT) / file
+        if not path.exists():
+            continue
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip().lstrip("# ").strip()
+            if not line.startswith("GD_") or "=" not in line:
+                continue
+            name = line.split("=", 1)[0].strip()
+            if name in secrets or "__" not in name:
+                continue
+
+            node = cfg.data
+            for part in name[len("GD_"):].lower().split("__"):
+                if isinstance(node, dict) and part in node:
+                    node = node[part]
+                else:
+                    missing.append(f"{name} ({file})")
+                    break
+
+    assert not missing, f"متغيرات موثّقة بلا مفاتيح مقابلة: {missing}"

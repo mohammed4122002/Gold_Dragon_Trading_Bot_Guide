@@ -11,8 +11,12 @@ bot:
   symbol: "XAUUSD"
   # dry_run = true → لا يُرسل أي أمر حقيقي، كل التنفيذ عبر PaperBroker
   dry_run: true
-  # نمط جلب البيانات: mt5 | csv | synthetic
+  # نمط جلب البيانات: mt5 | metaapi | yahoo | twelvedata | csv | synthetic
   feed: synthetic
+  # رمز الذهب لدى مزوّد البيانات الحية (يختلف عن رمز الوسيط أعلاه)
+  #   yahoo      → XAUUSD=X (فوري) أو GC=F (آجل، سعره يختلف ببضعة دولارات)
+  #   twelvedata → XAU/USD
+  live_symbol: "XAUUSD=X"
   csv_dir: "data"
   scan_interval_seconds: 60
   position_check_seconds: 300
@@ -46,6 +50,9 @@ broker:
   max_spread: 0.60          # بالدولار — فوقه تُرفض الصفقة
   slippage_points: 20
   magic: 234000
+  # رصيد وسبريد المحاكاة الورقية (dry-run و forward test)
+  paper_balance: 1000.0
+  paper_spread: 0.20
   # بيانات الدخول تُقرأ من البيئة: GD_MT5_LOGIN / GD_MT5_PASSWORD / GD_MT5_SERVER
   mt5_terminal_path: ""
 
