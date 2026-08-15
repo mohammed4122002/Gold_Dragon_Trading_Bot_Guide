@@ -1,0 +1,36 @@
+{
+  "_comment": "تقويم أخبار محلي. انسخه إلى config/news_calendar.json وحدّثه أسبوعياً. الأوقات UTC بصيغة ISO-8601.",
+  "_source_hint": "يمكن توليده من ForexFactory / Investing calendar أو إدخاله يدوياً كل أحد.",
+  "events": [
+    {
+      "time": "2026-08-07T12:30:00Z",
+      "title": "Non-Farm Payrolls (NFP)",
+      "currency": "USD",
+      "impact": "high"
+    },
+    {
+      "time": "2026-08-12T12:30:00Z",
+      "title": "CPI m/m",
+      "currency": "USD",
+      "impact": "high"
+    },
+    {
+      "time": "2026-08-19T18:00:00Z",
+      "title": "FOMC Statement",
+      "currency": "USD",
+      "impact": "high"
+    },
+    {
+      "time": "2026-08-21T11:45:00Z",
+      "title": "ECB Rate Decision",
+      "currency": "EUR",
+      "impact": "high"
+    },
+    {
+      "time": "2026-08-26T12:30:00Z",
+      "title": "Retail Sales m/m",
+      "currency": "USD",
+      "impact": "medium"
+    }
+  ]
+}

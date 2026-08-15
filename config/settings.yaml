@@ -1,0 +1,118 @@
+# ═══════════════════════════════════════════════════════════════
+#  Gold Dragon Bot — الإعدادات العامة
+#  كل قيمة هنا يمكن تجاوزها بمتغير بيئة بالصيغة: GD_<SECTION>__<KEY>
+#  مثال: GD_BOT__DRY_RUN=false
+#  الأسرار (كلمات المرور والتوكنات) تُقرأ من البيئة فقط — راجع .env.example
+# ═══════════════════════════════════════════════════════════════
+
+bot:
+  name: "Gold Dragon Bot"
+  version: "1.0.0"
+  symbol: "XAUUSD"
+  # dry_run = true → لا يُرسل أي أمر حقيقي، كل التنفيذ عبر PaperBroker
+  dry_run: true
+  # نمط جلب البيانات: mt5 | csv | synthetic
+  feed: synthetic
+  csv_dir: "data"
+  scan_interval_seconds: 60
+  position_check_seconds: 300
+  correlation_refresh_seconds: 900
+  timeframes:
+    analysis: "H1"
+    trigger: "M15"
+    confirmation: "M5"
+  bars:
+    H4: 300
+    H1: 400
+    M15: 400
+    M5: 200
+
+broker:
+  # مواصفات العقد لـ XAUUSD — تحقق منها لدى وسيطك قبل التشغيل الحي
+  contract_size: 100        # أونصة لكل 1.00 لوت
+  min_lot: 0.01
+  max_lot: 10.0
+  lot_step: 0.01
+  point: 0.01               # أصغر تغير سعري لدى الوسيط
+  max_spread: 0.60          # بالدولار — فوقه تُرفض الصفقة
+  slippage_points: 20
+  magic: 234000
+  # بيانات الدخول تُقرأ من البيئة: GD_MT5_LOGIN / GD_MT5_PASSWORD / GD_MT5_SERVER
+  mt5_terminal_path: ""
+
+gold_dragon:
+  protocol_version: "Pro v4"
+  # ملاحظة: مصفوفة ACS في البروتوكول مجموعها 14 نقطة خام،
+  # وتُطبَّع (Normalize) إلى مقياس 0–10 قبل المقارنة بالحدود التالية.
+  min_acs: 7.0
+  min_acs_for_alternative: 8.0
+  auto_reject_acs: 4.0
+  killzone_only: true
+  news_filter: true
+  require_sweep: true
+  require_choch: true
+  max_poi_distance: 12.0     # بالدولار — POI أبعد من هذا يُتجاهل
+  # أقصى بُعد للدخول عن حافة POI بمضاعفات المخاطرة — فلتر اللحاق بالحركة
+  max_entry_distance_r: 1.0
+  swing_lookback: 2          # عدد الشموع يمين/يسار لتأكيد القمة/القاع
+  equal_level_tolerance: 0.5 # بالدولار — تقارب القمم/القيعان لاعتبارها Equal
+  atr_period: 14
+  displacement_atr_multiple: 1.5
+
+  correlation_gate:
+    enabled: true
+    # وزن كل أصل حسب البند 4.1 — يُستخدم في حساب درجة التوافق
+    assets:
+      DXY:     {weight: 0.30, correlation: -0.80, required: true}
+      US10Y:   {weight: 0.20, correlation: -0.55, required: true}
+      XAGUSD:  {weight: 0.15, correlation: 0.75,  required: false}
+      VIX:     {weight: 0.10, correlation: 0.30,  required: false}
+      SPX500:  {weight: 0.10, correlation: -0.35, required: false}
+    vix_no_trade_above: 30.0
+    conflict_threshold: -0.20   # درجة توافق أقل من هذا = تعارض → رفض
+
+  psychology_gate:
+    enabled: true
+    state_file: "state/psychology.json"
+    # إن كانت آخر إجابة أقدم من هذا العمر تُعتبر غير معروفة (نصف درجة)
+    max_state_age_hours: 12
+    block_on_zero: true
+
+  adaptive_memory:
+    enabled: true
+    min_trades_for_adjustment: 20
+    min_win_rate: 0.60        # نوع POI تحت هذه النسبة يُمنع (البند 10.2)
+
+  alert_protocol:
+    enabled: true
+    poi_proximity: 2.0        # بالدولار — Level 1
+
+sessions:
+  # كل الأوقات بتوقيت UTC. توقيت مكة = UTC+3 (بين قوسين للمرجع)
+  timezone: "UTC"
+  killzones:
+    - {name: "Tokyo",   start: "23:00", end: "02:00", quality: 0.5}   # 02:00–05:00 مكة
+    - {name: "London",  start: "07:00", end: "10:00", quality: 1.0}   # 10:00–13:00 مكة
+    - {name: "Overlap", start: "12:00", end: "14:00", quality: 1.5}   # 15:00–17:00 مكة
+    - {name: "NY",      start: "12:00", end: "15:00", quality: 1.0}   # 15:00–18:00 مكة
+  # نافذة إغلاق الجلسة الأمريكية — ممنوع الدخول (البند 2.ج.3)
+  no_trade_windows:
+    - {name: "US Close", start: "18:00", end: "19:00"}
+
+news:
+  # ملف تقويم محلي بصيغة JSON — راجع config/news_calendar.example.json
+  calendar_file: "config/news_calendar.json"
+  freeze_minutes_before: 30
+  freeze_minutes_after: 30
+  high_impact_keywords: [NFP, CPI, FOMC, ECB, BoE, PPI, "Retail Sales", GDP, "Non-Farm"]
+
+notifications:
+  enabled: true
+  provider: console          # console | telegram
+  # التوكن ومعرّف المحادثة من البيئة: GD_TELEGRAM_TOKEN / GD_TELEGRAM_CHAT_ID
+  min_level: info            # info | warning | critical
+
+storage:
+  database: "data/trades.db"
+  log_file: "logs/bot.log"
+  log_level: "INFO"

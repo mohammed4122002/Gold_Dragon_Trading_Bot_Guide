@@ -1,0 +1,26 @@
+# بيئة ونواتج التشغيل
+.env
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# حالة التشغيل — خاصة بكل جهاز ولا تُشارك
+state/*.json
+logs/*.log
+logs/*.log.*
+data/*.db
+data/*.csv
+data/*.json
+
+# تقويم الأخبار المحلي (يُحدَّث يدوياً، والمثال هو المُتتبَّع)
+config/news_calendar.json
+
+# نظام التشغيل والمحررات
+.DS_Store
+.idea/
+.vscode/
