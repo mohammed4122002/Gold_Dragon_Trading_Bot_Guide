@@ -15,6 +15,7 @@ logs/*.log
 logs/*.log.*
 data/*.db
 data/*.csv
+data/*.json
 
 # تقويم الأخبار المحلي (يُحدَّث يدوياً، والمثال هو المُتتبَّع)
 config/news_calendar.json
