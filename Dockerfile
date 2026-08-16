@@ -33,4 +33,4 @@ HEALTHCHECK --interval=2m --timeout=10s --start-period=45s --retries=3 \
 u.urlopen('http://127.0.0.1:' + os.environ.get('PORT','8080') + '/health', timeout=5)" \
   || exit 1
 
-CMD ["python", "-m", "src.main", "run"]
+CMD ["python", "-m", "src.main", "run-all"]

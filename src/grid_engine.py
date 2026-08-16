@@ -19,6 +19,7 @@ import pandas as pd
 from .core.indicators import atr
 from .infra.broker import Broker, PaperBroker
 from .infra.data_feed import DataFeed, DataFeedError
+from .infra.data_logger import DataLogger
 from .infra.logger import get_logger
 from .infra.notification_service import NotificationService
 from .kill_switch import KillSwitch
@@ -30,11 +31,13 @@ log = get_logger(__name__)
 
 class GridHedgeBot:
     def __init__(self, config: Any, broker: Broker, feed: DataFeed,
-                 notifier: NotificationService | None = None) -> None:
+                 notifier: NotificationService | None = None,
+                 data_logger: DataLogger | None = None) -> None:
         self.config = config
         self.broker = broker
         self.feed = feed
         self.notifier = notifier or NotificationService(config)
+        self.data_logger = data_logger or DataLogger(config.path("storage.database"))
 
         self.risk = RiskManager(
             config, broker.spec,
@@ -133,7 +136,28 @@ class GridHedgeBot:
             kill_switch_reason=self.kill_switch.reason,
             atr_value=atr_value,
         )
+        self._log_basket_close(outcome)
         return self._finish(outcome)
+
+    def _log_basket_close(self, outcome: dict[str, Any]) -> None:
+        """يسجّل في trades.db فقط عند إغلاق سلة فعلية (وجود positions_count).
+
+        outcome يحمل هذا المفتاح حصراً في مسارات الإغلاق الأربعة داخل
+        ``HedgeGridStrategy.sync`` (kill_switch/risk_blocked/basket_loss_cutoff/
+        basket_tp) — وبقيمة > 0 فقط إن كان هناك صفقات فعلية أُغلقت، لا مجرد
+        محاولة على شبكة فارغة.
+        """
+        count = outcome.get("positions_count", 0)
+        if not count:
+            return
+        try:
+            self.data_logger.log_grid_basket(
+                status=outcome["status"], pnl=float(outcome.get("closed_pnl", 0.0)),
+                positions=int(count), volume=float(outcome.get("volume", 0.0)),
+                payload=outcome,
+            )
+        except Exception as exc:  # التسجيل لا يجوز أن يُسقط دورة التداول
+            log.error("فشل تسجيل إغلاق سلة الشبكة: %s", exc)
 
     # ═══════════════════════════════════════════════════════════════
     def _advance_paper_clock(self, bars: pd.DataFrame) -> None:

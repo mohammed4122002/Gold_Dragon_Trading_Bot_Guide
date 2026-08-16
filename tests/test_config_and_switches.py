@@ -176,3 +176,86 @@ def test_documented_env_vars_map_to_real_config_keys():
                     break
 
     assert not missing, f"متغيرات موثّقة بلا مفاتيح مقابلة: {missing}"
+
+
+# ═══ تشغيل الاثنين معاً (run-all) ═══════════════════════════════════
+def test_build_run_all_bots_shares_feed_and_data_logger(config, tmp_path):
+    """أهم ضمانة في run-all: مصدر بيانات وقاعدة بيانات مشتركان، لكن وسيطان
+    (وبالتالي رصيدان) مستقلان تماماً — هذا هو معنى "حسابين" هنا."""
+    from src.main import build_run_all_bots
+
+    config.data["bot"]["feed"] = "synthetic"
+    config.data["grid"]["enabled"] = True
+    config.data["grid"]["risk_state_file"] = str(tmp_path / "grid_risk.json")
+    config.data["grid"]["kill_switch_state_file"] = str(tmp_path / "grid_kill.json")
+
+    bot, grid_bot = build_run_all_bots(config, live=False)
+
+    assert grid_bot is not None
+    assert bot.analyzer.feed is grid_bot.feed          # مصدر بيانات مشترك
+    assert bot.data_logger is grid_bot.data_logger      # قاعدة بيانات مشتركة
+    assert bot.broker is not grid_bot.broker            # وسيطان مستقلان تماماً
+    assert bot.broker.balance() == grid_bot.broker.balance() == pytest.approx(1000.0)
+    assert bot.grid_bot is grid_bot                     # للمراقبة فقط
+
+
+def test_build_run_all_bots_without_grid_enabled(config):
+    from src.main import build_run_all_bots
+
+    config.data["bot"]["feed"] = "synthetic"
+    config.data["grid"]["enabled"] = False
+
+    bot, grid_bot = build_run_all_bots(config, live=False)
+    assert grid_bot is None
+    assert bot.grid_bot is None
+
+
+def test_preflight_storage_includes_grid_paths_when_requested(config, tmp_path):
+    from src.main import preflight_storage
+
+    config.data["grid"]["risk_state_file"] = str(tmp_path / "nested" / "grid_risk.json")
+    config.data["grid"]["kill_switch_state_file"] = str(tmp_path / "nested" / "grid_kill.json")
+
+    assert preflight_storage(config, include_grid=False) == []
+    assert preflight_storage(config, include_grid=True) == []
+    assert (tmp_path / "nested").exists()
+
+
+# ═══ تقرير المقارنة ══════════════════════════════════════════════
+def test_report_compares_both_strategies_when_data_exists(config, tmp_path, capsys):
+    from datetime import datetime, timezone
+
+    from src.infra.data_logger import DataLogger
+    from src.main import cmd_report
+    from src.models import Trade, TradeStage
+
+    db_path = tmp_path / "trades.db"
+    config.data["storage"]["database"] = str(db_path)
+    config.data["grid"]["enabled"] = True
+
+    logger = DataLogger(db_path)
+    trade = Trade(ticket=1, direction="buy", symbol="XAUUSD", entry=2400.0, sl=2395.0,
+                  tp1=2410.0, tp2=2415.0, tp3=2420.0, volume=0.01, initial_volume=0.01,
+                  stage=TradeStage.CLOSED, closed_at=datetime.now(timezone.utc),
+                  pnl=10.0, exit_price=2410.0)
+    logger.log_trade_open(trade)
+    logger.log_trade_close(trade)
+    logger.log_grid_basket("basket_tp", pnl=3.0, positions=2, volume=0.02)
+
+    assert cmd_report(config, None) == 0
+    output = capsys.readouterr().out
+    assert "Gold Dragon SMC" in output
+    assert "شبكة تحوّط" in output
+    assert "المقارنة" in output
+    assert "SMC" in output and "الشبكة" in output
+
+
+def test_report_skips_comparison_with_no_grid_data(config, tmp_path, capsys):
+    from src.main import cmd_report
+
+    config.data["storage"]["database"] = str(tmp_path / "trades.db")
+    config.data["grid"]["enabled"] = False
+
+    assert cmd_report(config, None) == 0
+    output = capsys.readouterr().out
+    assert "شبكة تحوّط" not in output

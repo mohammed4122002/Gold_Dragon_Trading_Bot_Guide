@@ -72,8 +72,19 @@ CREATE TABLE IF NOT EXISTS events (
     payload      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS grid_baskets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    closed_at    TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    pnl          REAL NOT NULL,
+    positions    INTEGER NOT NULL,
+    volume       REAL NOT NULL,
+    payload      TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_trades_closed ON trades(closed_at);
 CREATE INDEX IF NOT EXISTS idx_trades_poi ON trades(poi_type);
+CREATE INDEX IF NOT EXISTS idx_grid_closed ON grid_baskets(closed_at);
 """
 
 
@@ -164,6 +175,23 @@ class DataLogger:
                 ),
             )
 
+    def log_grid_basket(self, status: str, pnl: float, positions: int,
+                        volume: float, payload: dict | None = None) -> None:
+        """تسجيل إغلاق سلة كاملة من شبكة التحوّط.
+
+        شبكة التحوّط لا تُدار كصفقة فردية (لا SL/TP لكل مركز)، لذا لا تُسجَّل
+        في جدول ``trades`` — سلة كاملة (عدة صفقات تُغلق معاً) هي وحدة النتيجة
+        هنا، تماماً كما صفقة واحدة هي وحدة النتيجة في بوت SMC.
+        """
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO grid_baskets
+                   (closed_at, status, pnl, positions, volume, payload)
+                   VALUES (?,?,?,?,?,?)""",
+                (_now(), status, pnl, positions, volume,
+                 json.dumps(payload or {}, ensure_ascii=False, default=str)),
+            )
+
     def log_event(self, kind: str, message: str, payload: dict | None = None) -> None:
         with self._conn() as conn:
             conn.execute(
@@ -215,6 +243,40 @@ class DataLogger:
                 "significant": float(trades >= min_trades),
             }
         return stats
+
+    def closed_grid_baskets(self, limit: int = 500) -> list[dict[str, Any]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM grid_baskets ORDER BY closed_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def grid_summary(self, limit: int = 500) -> dict[str, Any]:
+        """نفس شكل ``summary()`` بالضبط — لمقارنة مباشرة بين البوتين في تقرير واحد."""
+        baskets = self.closed_grid_baskets(limit)
+        if not baskets:
+            return {"baskets": 0, "win_rate": 0.0, "profit_factor": 0.0,
+                    "net_pnl": 0.0, "avg_pnl": 0.0, "max_drawdown": 0.0}
+
+        pnls = [float(b["pnl"] or 0) for b in baskets][::-1]  # ترتيب زمني تصاعدي
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+        gross_loss = abs(sum(losses))
+
+        equity, peak, max_dd = 0.0, 0.0, 0.0
+        for pnl in pnls:
+            equity += pnl
+            peak = max(peak, equity)
+            max_dd = max(max_dd, peak - equity)
+
+        return {
+            "baskets": len(pnls),
+            "win_rate": len(wins) / len(pnls),
+            "profit_factor": (sum(wins) / gross_loss) if gross_loss else float("inf"),
+            "net_pnl": sum(pnls),
+            "avg_pnl": sum(pnls) / len(pnls),
+            "max_drawdown": max_dd,
+        }
 
     def summary(self, limit: int = 500) -> dict[str, Any]:
         trades = self.closed_trades(limit)

@@ -212,3 +212,38 @@ def test_atr_step_mode_falls_back_when_no_atr_value(config, broker, risk):
     strategy = HedgeGridStrategy(config, broker, risk)
     step = strategy.compute_step(atr_value=None)
     assert step == strategy.step_fixed
+
+
+# ═══ بيانات إغلاق السلة (لتسجيلها في DataLogger لاحقاً) ═══════════
+def test_basket_tp_outcome_carries_closure_details_even_with_reinit(grid, broker):
+    """أهم اختبار في هذا الملف: reinit_after_close=True (الافتراضي) لا يجوز
+    أن يمحو positions_count/closed_pnl من outcome — وإلا لن يُسجَّل شيء أبداً
+    في قاعدة البيانات في الحالة الشائعة (البند 3 من grid.yaml هو الافتراضي)."""
+    grid.basket_tp_usd = 0.1
+    grid.sync(price=4118.72, balance=broker.balance())
+    broker.process_bar(high=4122.0, low=4118.0, close=4121.9)
+    out = grid.sync(price=4121.9, balance=broker.balance())
+
+    assert out["status"] == "initialized"  # أُعيدت التهيئة كما هو متوقع
+    assert out["positions_count"] == 1
+    assert out["closed_pnl"] == pytest.approx(0.18, abs=0.05)
+    assert out["volume"] == pytest.approx(0.01)
+
+
+def test_basket_loss_cutoff_outcome_carries_closure_details_with_reinit(grid, broker):
+    grid.max_basket_loss_pct = 0.005
+    grid.sync(price=4118.72, balance=broker.balance())
+    broker.process_bar(high=4122.0, low=4118.0, close=4121.9)
+    grid.sync(price=4121.9, balance=broker.balance())
+    broker.process_bar(high=4122.0, low=4100.0, close=4105.0)
+    out = grid.sync(price=4105.0, balance=broker.balance())
+
+    assert out.get("positions_count", 0) >= 1
+    assert out.get("closed_pnl", 0) < 0
+
+
+def test_no_closure_metadata_when_nothing_closed(grid, broker):
+    out = grid.sync(price=4118.72, balance=broker.balance())
+    assert out["status"] == "initialized"
+    assert "positions_count" not in out
+    assert "closed_pnl" not in out

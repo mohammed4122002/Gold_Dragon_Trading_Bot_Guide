@@ -151,35 +151,47 @@ class HedgeGridStrategy:
         # 1) الحماية أولاً — الأرخص وأهم شيء (نفس ترتيب bot_engine: kill switch
         #    ثم مدير المخاطرة قبل أي منطق تداول).
         if kill_switch_active:
+            count, volume = len(positions), self.basket_volume(positions)
             closed_pnl = self._reset_basket(positions, "kill_switch")
-            return self._outcome("kill_switch", kill_switch_reason, closed_pnl=closed_pnl)
+            return self._outcome("kill_switch", kill_switch_reason, closed_pnl=closed_pnl,
+                                 positions_count=count, volume=volume)
 
         guard = self.risk.daily_guard(balance)
         if not guard.allowed:
+            count, volume = len(positions), self.basket_volume(positions)
             closed_pnl = self._reset_basket(positions, "risk_blocked")
-            return self._outcome("risk_blocked", guard.reason, closed_pnl=closed_pnl)
+            return self._outcome("risk_blocked", guard.reason, closed_pnl=closed_pnl,
+                                 positions_count=count, volume=volume)
 
         # 2) قطع مبكر لخسارة السلة العائمة — مستقل عن حد الخسارة اليومي،
         #    خط دفاع أول يعيد ضبط هذه الشبكة فقط دون قفل التداول ليوم كامل.
+        #
+        # ``closure`` تحمل بيانات الإغلاق (لتسجيلها في قاعدة البيانات لاحقاً)
+        # بمعزل عن ``status``/``detail`` النهائيين، لأن reinit_after_close=true
+        # (الافتراضي) يجعل الدورة تُكمل لإعادة بناء الشبكة وتُرجع outcome آخر
+        # في نهاية الدالة — فلا يجوز أن يُفقَد closed_pnl في ذلك المسار.
+        closure: dict[str, Any] | None = None
         floating = self.basket_pnl(positions)
+
         if positions and balance > 0 and (-floating / balance) >= self.max_basket_loss_pct:
+            count, volume = len(positions), self.basket_volume(positions)
             closed_pnl = self._reset_basket(positions, "basket_loss_cutoff")
             positions = []
-            outcome = self._outcome(
-                "basket_loss_cutoff", f"خسارة عائمة {closed_pnl:+.2f}$", closed_pnl=closed_pnl
-            )
+            closure = {"status": "basket_loss_cutoff",
+                       "detail": f"خسارة عائمة {closed_pnl:+.2f}$", "closed_pnl": closed_pnl,
+                       "positions_count": count, "volume": volume}
             if not self.reinit_after_close:
-                return outcome
+                return self._outcome(**closure)
 
         # 3) هدف ربح السلة
         elif positions and floating >= self._basket_target(positions):
+            count, volume = len(positions), self.basket_volume(positions)
             closed_pnl = self._reset_basket(positions, "basket_tp")
             positions = []
-            outcome = self._outcome(
-                "basket_tp", f"ربح السلة {closed_pnl:+.2f}$", closed_pnl=closed_pnl
-            )
+            closure = {"status": "basket_tp", "detail": f"ربح السلة {closed_pnl:+.2f}$",
+                       "closed_pnl": closed_pnl, "positions_count": count, "volume": volume}
             if not self.reinit_after_close:
-                return outcome
+                return self._outcome(**closure)
 
         # 4) تمديد/تهيئة الشبكة — ما إن تُغلق السلة (أو لم تكن موجودة أصلاً)
         pending = self.our_pending()
@@ -231,7 +243,14 @@ class HedgeGridStrategy:
             )
             detail += f" | فلتر الاتجاه أوقف تمديد جهة {paused_sides} ({streak} صفقات متتالية)"
 
-        return self._outcome(status, detail, floating=floating, extended=extended)
+        extra: dict[str, Any] = {"floating": floating, "extended": extended}
+        if closure is not None:
+            detail = f"{closure['detail']} ثم أُعيدت التهيئة — {detail}"
+            extra.update(closed_pnl=closure["closed_pnl"],
+                         positions_count=closure["positions_count"],
+                         volume=closure["volume"])
+
+        return self._outcome(status, detail, **extra)
 
     def _outcome(self, status: str, detail: str = "", **extra: Any) -> dict[str, Any]:
         outcome = {"status": status, "detail": detail, "at": datetime.now(timezone.utc).isoformat(),

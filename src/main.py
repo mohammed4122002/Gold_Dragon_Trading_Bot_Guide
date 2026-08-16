@@ -6,6 +6,7 @@
     python -m src.main run --live              # تشغيل حقيقي — يتطلب تأكيداً
     python -m src.main grid --once             # دورة واحدة من شبكة Buy Stop/Sell Stop
     python -m src.main grid                    # تشغيل حلقة الشبكة (dry-run افتراضياً)
+    python -m src.main run-all                 # SMC + الشبكة معاً، حسابان ورقيان منفصلان
     python -m src.main backtest --bars 3000
     python -m src.main psych --state calm
     python -m src.main kill --reset
@@ -16,6 +17,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
+import time
 from typing import Any
 
 from .bot_engine import GoldDragonBot
@@ -48,12 +51,15 @@ DISCLAIMER = (
 )
 
 
-def preflight_storage(config: Any) -> list[str]:
+def preflight_storage(config: Any, include_grid: bool = False) -> list[str]:
     """التأكد من أن مسارات الحالة قابلة للكتابة قبل بدء التداول.
 
     على منصات الحاويات، قرص دائم غير قابل للكتابة يعني أن قفل الـ48 ساعة
     وقاعدة الصفقات ستُفقد مع كل إعادة نشر. الفشل هنا يجب أن يكون صريحاً
     ومبكراً، لا أن يُكتشف بعد ثلاث خسارات متتالية.
+
+    ``include_grid`` يضيف مسارات حالة شبكة التحوّط (مخاطرة + Kill Switch)
+    المستقلة عن بوت SMC — يُمرَّر من الأوامر التي تُشغّل الشبكة فعلياً.
     """
     problems: list[str] = []
     targets = {
@@ -64,6 +70,13 @@ def preflight_storage(config: Any) -> list[str]:
             "gold_dragon.psychology_gate.state_file", "state/psychology.json"
         ),
     }
+    if include_grid:
+        targets["حالة مخاطرة الشبكة"] = config.path(
+            "grid.risk_state_file", "state/grid_risk_state.json"
+        )
+        targets["Kill Switch الشبكة"] = config.path(
+            "grid.kill_switch_state_file", "state/grid_kill_switch.json"
+        )
     for label, path in targets.items():
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -275,7 +288,7 @@ def cmd_grid(config: Any, args: argparse.Namespace) -> int:
         print("\n⚠️  الإعدادات على وضع حقيقي — استخدم --live للتأكيد الصريح.")
         return 2
 
-    problems = preflight_storage(config)
+    problems = preflight_storage(config, include_grid=True)
     if problems:
         print("\n❌ التخزين غير قابل للكتابة — أوقفت التشغيل:")
         for problem in problems:
@@ -292,6 +305,99 @@ def cmd_grid(config: Any, args: argparse.Namespace) -> int:
         return 0
 
     bot.start()
+    return 0
+
+
+def build_run_all_bots(
+    config: Any, live: bool = False
+) -> tuple[GoldDragonBot, GridHedgeBot | None]:
+    """يبني بوتَي SMC والشبكة لتشغيل ``run-all``، بمعزل عن حلقة التشغيل نفسها.
+
+    مفصولة عن ``cmd_run_all`` عمداً لتبقى الأسلاك (نفس ``feed``/``data_logger``
+    المشتركين، وسيطان منفصلان تماماً، وربط ``bot.grid_bot`` للمراقبة فقط)
+    قابلة للاختبار دون تشغيل حلقة ``bot.start()`` المحجوبة (blocking).
+    """
+    grid_enabled = bool(config.get("grid.enabled", False))
+    data_logger = DataLogger(config.path("storage.database"))
+    # مصدر بيانات واحد مشترك بين البوتين: يقلّل الضغط على حصة مزوّد البيانات
+    # الخارجي إلى النصف تقريباً دون أن يمسّ استقلالية القرار أو الرصيد —
+    # كل محرك يبني إشاراته وصفقاته بمعزل تام عن الآخر.
+    feed = build_feed(config)
+
+    bot = GoldDragonBot(
+        config, build_broker(config, force_paper=not live), feed, data_logger=data_logger
+    )
+
+    grid_bot: GridHedgeBot | None = None
+    if grid_enabled:
+        grid_bot = GridHedgeBot(
+            config, build_broker(config, force_paper=not live), feed, data_logger=data_logger,
+        )
+        bot.grid_bot = grid_bot  # لصفحة المراقبة الموحّدة فقط — لا تأثير على القرار
+
+    return bot, grid_bot
+
+
+def cmd_run_all(config: Any, args: argparse.Namespace) -> int:
+    """تشغيل بوت Gold Dragon SMC وشبكة التحوّط معاً — حسابان ورقيان مستقلان.
+
+    الغرض: مقارنة الاستراتيجيتين على نفس بيانات السوق دون تدخّل يدوي.
+    كل بوت له وسيط (رصيد ورقي) ومدير مخاطرة وKill Switch مستقلون تماماً؛
+    الشيء الوحيد المشترك بينهما هو مصدر البيانات (يوفّر حصة المزوّد) وقاعدة
+    ``trades.db`` (جدولان منفصلان: ``trades`` و``grid_baskets``) — استخدم
+    ``python -m src.main report`` بعد فترة لمقارنة النتيجتين من نفس الملف.
+    """
+    print(BANNER)
+    print(DISCLAIMER)
+
+    grid_enabled = bool(config.get("grid.enabled", False))
+    if grid_enabled:
+        print(
+            "\n🕸️  الشبكة مفعّلة: ستعمل بجوار SMC بحساب ورقي مستقل تماماً.\n"
+            "    راجع config/grid.yaml — حدود الحماية فيه إلزامية."
+        )
+    else:
+        print(
+            "\n⚠️  grid.enabled: false — سيعمل بوت SMC فقط دون شبكة للمقارنة.\n"
+            "    فعّلها عبر GD_GRID__ENABLED=true لتشغيل الاثنين معاً."
+        )
+
+    if args.live:
+        if config.dry_run:
+            print("\n⚠️  --live يتطلب bot.dry_run: false في settings.yaml")
+            return 2
+        prompt = "\n🔴 تشغيل حقيقي" + (" لبوتَي SMC والشبكة معاً" if grid_enabled else "")
+        confirm = input(f"{prompt}. اكتب LIVE للتأكيد: ").strip()
+        if confirm != "LIVE":
+            print("أُلغي التشغيل.")
+            return 3
+    elif not config.dry_run:
+        print("\n⚠️  الإعدادات على وضع حقيقي — استخدم --live للتأكيد الصريح.")
+        return 2
+
+    problems = preflight_storage(config, include_grid=grid_enabled)
+    if problems:
+        print("\n❌ التخزين غير قابل للكتابة — أوقفت التشغيل:")
+        for problem in problems:
+            print(f"   • {problem}")
+        return 4
+
+    bot, grid_bot = build_run_all_bots(config, live=args.live)
+
+    threads = [threading.Thread(target=bot.start, daemon=True, name="smc-bot")]
+    if grid_bot is not None:
+        threads.append(threading.Thread(target=grid_bot.start, daemon=True, name="grid-bot"))
+    for thread in threads:
+        thread.start()
+
+    try:
+        while any(thread.is_alive() for thread in threads):
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nإيقاف يدوي بواسطة المستخدم")
+        bot.stop()
+        if grid_bot is not None:
+            grid_bot.stop()
     return 0
 
 
@@ -429,7 +535,7 @@ def cmd_metaapi(config: Any, args: argparse.Namespace) -> int:
 def cmd_report(config: Any, args: argparse.Namespace) -> int:
     logger = DataLogger(config.path("storage.database"))
     stats = logger.summary()
-    print("═══ ملخص الأداء ═══")
+    print("═══ Gold Dragon SMC ═══")
     for key, value in stats.items():
         print(f"  {key:<16} {value:.4f}" if isinstance(value, float) else
               f"  {key:<16} {value}")
@@ -443,6 +549,28 @@ def cmd_report(config: Any, args: argparse.Namespace) -> int:
             flag = "" if data["significant"] else "  (عينة صغيرة — غير معتد بها)"
             print(f"  {poi_type:<14} صفقات {int(data['trades']):>3} | "
                   f"نجاح {data['win_rate']:.0%} | متوسط R {data['avg_r']:+.2f}{flag}")
+
+    grid_stats = logger.grid_summary()
+    if grid_stats["baskets"] > 0:
+        print("\n═══ شبكة تحوّط Buy Stop/Sell Stop ═══")
+        for key, value in grid_stats.items():
+            print(f"  {key:<16} {value:.4f}" if isinstance(value, float) else
+                  f"  {key:<16} {value}")
+
+        print("\n═══ المقارنة ═══")
+        if stats["trades"] == 0:
+            print("  لا صفقات SMC بعد — لا مقارنة ممكنة.")
+        else:
+            better = ("SMC" if stats["net_pnl"] > grid_stats["net_pnl"]
+                     else "الشبكة" if grid_stats["net_pnl"] > stats["net_pnl"] else "تعادل")
+            print(f"  صافي الربح: SMC {stats['net_pnl']:+.2f}$  |  "
+                 f"الشبكة {grid_stats['net_pnl']:+.2f}$  →  الأعلى حالياً: {better}")
+            small_sample = stats["trades"] < 20 or grid_stats["baskets"] < 20
+            if small_sample:
+                print("  ⚠️  عينة صغيرة (<20) — هذا الفارق قد ينعكس تماماً، ليس حكماً نهائياً.")
+    elif bool(config.get("grid.enabled", False)):
+        print("\n═══ شبكة تحوّط Buy Stop/Sell Stop ═══")
+        print("  لا سلال مُغلقة بعد — شغّل run-all وانتظر أول إغلاق سلة.")
     return 0
 
 
@@ -469,6 +597,11 @@ def build_parser() -> argparse.ArgumentParser:
     grid.add_argument("--reset-kill", action="store_true",
                       help="فكّ Kill Switch الخاص بالشبكة يدوياً")
     grid.add_argument("--note", default="")
+
+    run_all = sub.add_parser(
+        "run-all", help="تشغيل SMC + شبكة التحوّط معاً (حسابان ورقيان منفصلان للمقارنة)"
+    )
+    run_all.add_argument("--live", action="store_true", help="تشغيل حقيقي (يتطلب تأكيداً)")
 
     backtest = sub.add_parser("backtest", help="اختبار تاريخي")
     backtest.add_argument("--bars", type=int, default=3000, help="عدد شموع M15")
@@ -498,6 +631,7 @@ COMMANDS = {
     "analyze": cmd_analyze,
     "run": cmd_run,
     "grid": cmd_grid,
+    "run-all": cmd_run_all,
     "backtest": cmd_backtest,
     "psych": cmd_psych,
     "kill": cmd_kill,

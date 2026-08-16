@@ -82,7 +82,7 @@ python -m src.main run --once    # دورة واحدة (تجريبية)
 │   └── models/                 POI / Signal / Trade
 ├── mql5/
 │   └── GoldDragon_HedgeGrid.mq5 نسخة MQL5 مستقلة من شبكة التحوّط — تشغيل مباشر في MT5
-├── tests/                      174 اختباراً
+├── tests/                      192 اختباراً
 └── scripts/make_sample_data.py توليد CSV تجريبي
 ```
 
@@ -152,13 +152,20 @@ export GD_RISK__RISK_PER_TRADE=0.005
 
 ```bash
 python -m src.main grid --once     # دورة واحدة (تجريبية، dry-run)
-python -m src.main grid            # تشغيل الحلقة
+python -m src.main grid            # تشغيل الحلقة وحدها
+python -m src.main run-all         # SMC + الشبكة معاً، بحسابين ورقيين مستقلين
 python -m src.main grid --reset-kill --note "..."   # فكّ Kill Switch الخاص بالشبكة
 ```
 
 فعّل `grid.enabled: true` في `config/grid.yaml` أولاً. الوسيطان المدعومان
 حالياً بأوامر معلّقة فعلية هما `PaperBroker` (تجريبي/Backtest) و`MT5Broker`
 (تنفيذ حقيقي على Windows) — `MetaApiBroker` لا يدعمها بعد.
+
+`run-all` هو أمر تشغيل الحاوية على Railway افتراضياً: يشغّل SMC دائماً،
+وبجواره الشبكة إن فُعِّلت، كل منهما بوسيط (رصيد ورقي) ومدير مخاطرة
+وKill Switch مستقلين تماماً — يشتركان فقط في مصدر البيانات (يوفّر حصة
+المزوّد) وملف `trades.db` (بجدولين منفصلين: `trades` و`grid_baskets`).
+`python -m src.main report` بعدها يطبع أداء الاثنين وسطر مقارنة مباشر.
 
 ### نسخة MQL5 مستقلة
 
@@ -175,7 +182,7 @@ python -m src.main grid --reset-kill --note "..."   # فكّ Kill Switch الخ�
 
 ```bash
 pip install -r requirements-dev.txt
-pytest -q          # 174 اختباراً
+pytest -q          # 192 اختباراً
 ruff check src tests scripts
 ```
 
@@ -221,6 +228,11 @@ HTTP + تحليل كامل + تنفيذ ورقي + إشعارات Telegram + ص�
 | `metaapi` | `GD_METAAPI_TOKEN` + `GD_METAAPI_ACCOUNT_ID` | حساب MT5 حقيقي/تجريبي من أي نظام |
 | `mt5` | — | Windows فقط، للتنفيذ الحقيقي |
 | `csv` / `synthetic` | — | للاختبار والـ Backtest |
+
+أمر تشغيل الحاوية الافتراضي هو `run-all`: يشغّل بوت SMC دائماً، وبجواره
+شبكة تحوّط Buy Stop/Sell Stop (البند التالي) **فقط إن فُعِّلت** — بحساب
+ورقي مستقل تماماً عن SMC، لمقارنة نتائج الاستراتيجيتين على نفس بيانات
+السوق. التفعيل والمقارنة بعد شهر في `docs/DEPLOY_RAILWAY.md` القسم 8.
 
 ---
 

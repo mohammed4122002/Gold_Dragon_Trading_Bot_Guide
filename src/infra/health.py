@@ -9,6 +9,10 @@
     GET /health      → 200 إذا كانت الحلقة تعمل، 503 إن توقفت
     GET /status      → JSON بحالة البوت والمخاطرة وآخر دورة
 
+إن شُغّل بوت شبكة التحوّط معاً (أمر run-all) عبر bot.grid_bot أو معامل
+grid_bot، تُضاف حالته في مفتاح "grid" ضمن /status وقسم مستقل في الصفحة —
+فصفحة واحدة تكفي لمقارنة أداء الاستراتيجيتين.
+
 ⚠️ لا تكشف هذه الواجهة أي سر (توكن، كلمة مرور، رقم حساب)، لكنها تكشف
 حالة حسابك التجريبي. أبقِ الرابط خاصاً.
 """
@@ -26,7 +30,7 @@ from .logger import get_logger
 log = get_logger(__name__)
 
 
-def _snapshot(bot: Any) -> dict[str, Any]:
+def _snapshot(bot: Any, grid_bot: Any = None) -> dict[str, Any]:
     """تجميع حالة البوت. أي خطأ هنا لا يجوز أن يُسقط الخادم."""
     now = datetime.now(timezone.utc)
     data: dict[str, Any] = {
@@ -69,7 +73,37 @@ def _snapshot(bot: Any) -> dict[str, Any]:
                 "acs": round(result.acs_score, 2),
                 "sweep": (result.sweep or {}).get("type"),
             }
+
+    grid_bot = grid_bot if grid_bot is not None else getattr(bot, "grid_bot", None)
+    if grid_bot is not None:
+        data["grid"] = _grid_snapshot(grid_bot)
     return data
+
+
+def _grid_snapshot(grid_bot: Any) -> dict[str, Any]:
+    """حالة بوت شبكة التحوّط — حساب ورقي مستقل، فيُقارَن بنتائج البوت الأساسي."""
+    grid: dict[str, Any] = {"running": bool(getattr(grid_bot, "is_running", False))}
+    try:
+        balance = grid_bot.broker.balance()
+        grid["balance"] = round(balance, 2)
+        grid["equity"] = round(grid_bot.broker.equity(), 2)
+        grid["open_positions"] = len(grid_bot.broker.positions())
+        grid["pending_orders"] = len(grid_bot.broker.pending_orders())
+    except Exception as exc:
+        grid["broker_error"] = str(exc)
+
+    try:
+        grid["kill_switch"] = {"active": grid_bot.kill_switch.active,
+                               "reason": grid_bot.kill_switch.reason}
+        grid["performance"] = grid_bot.data_logger.grid_summary()
+    except Exception as exc:
+        grid["state_error"] = str(exc)
+
+    last = getattr(grid_bot, "last_scan", None)
+    if last:
+        grid["last_scan"] = {"status": last.get("status"), "detail": last.get("detail"),
+                             "at": last.get("at")}
+    return grid
 
 
 _PAGE = """<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8">
@@ -120,11 +154,33 @@ def _render(data: dict[str, Any]) -> str:
         f'<div class="row"><span>{label}</span><span>{value}</span></div>'
         for label, value in fields
     )
-    return _PAGE.format(rows=rows)
+
+    grid = data.get("grid")
+    grid_section = ""
+    if grid:
+        perf = grid.get("performance", {}) or {}
+        grid_fields = [
+            ("الحالة", "يعمل ✅" if grid.get("running") else "متوقف ⛔"),
+            ("الرصيد", f"{grid.get('balance', '—')}$"),
+            ("مراكز مفتوحة", grid.get("open_positions", "—")),
+            ("أوامر معلّقة", grid.get("pending_orders", "—")),
+            ("سلال مُغلقة", perf.get("baskets", 0)),
+            ("صافي الربح", f"{perf.get('net_pnl', 0):+.2f}$"),
+            ("نسبة نجاح السلال", f"{perf.get('win_rate', 0):.0%}"),
+            ("آخر دورة", f"{(grid.get('last_scan') or {}).get('status', '—')}"),
+        ]
+        grid_rows = "".join(
+            f'<div class="row"><span>{label}</span><span>{value}</span></div>'
+            for label, value in grid_fields
+        )
+        grid_section = f'<h1 style="margin-top:1.5rem">🕸️ شبكة التحوّط</h1>{grid_rows}'
+
+    return _PAGE.format(rows=rows + grid_section)
 
 
 class _Handler(BaseHTTPRequestHandler):
     bot: Any = None
+    grid_bot: Any = None
 
     def _send(self, code: int, body: str, content_type: str) -> None:
         payload = body.encode("utf-8")
@@ -137,7 +193,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 — اسم مفروض من المكتبة القياسية
         path = self.path.split("?")[0].rstrip("/") or "/"
         try:
-            data = _snapshot(self.bot)
+            data = _snapshot(self.bot, grid_bot=self.grid_bot)
         except Exception as exc:
             self._send(500, json.dumps({"error": str(exc)}), "application/json")
             return
@@ -158,9 +214,10 @@ class _Handler(BaseHTTPRequestHandler):
         """كتم سجلّ الوصول — لا نريد سطراً لكل فحص صحي كل 30 ثانية."""
 
 
-def start_health_server(bot: Any, port: int, host: str = "0.0.0.0") -> ThreadingHTTPServer | None:
+def start_health_server(bot: Any, port: int, host: str = "0.0.0.0",
+                        grid_bot: Any = None) -> ThreadingHTTPServer | None:
     """تشغيل الخادم في خيط خلفي. يعيد None إذا تعذّر الربط."""
-    handler = type("BoundHandler", (_Handler,), {"bot": bot})
+    handler = type("BoundHandler", (_Handler,), {"bot": bot, "grid_bot": grid_bot})
     try:
         server = ThreadingHTTPServer((host, port), handler)
     except OSError as exc:

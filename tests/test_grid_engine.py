@@ -111,3 +111,35 @@ def test_engine_no_data_is_handled_gracefully(engine_config, spec, uptrend_bars)
 
     outcome = bot.tick()
     assert outcome["status"] == "no_data"
+
+
+# ═══ تكامل التسجيل في DataLogger ═══════════════════════════════════
+def test_engine_logs_basket_close_to_data_logger(engine_config, spec, uptrend_bars, tmp_path):
+    from src.infra.data_logger import DataLogger
+
+    engine_config.data["grid"]["basket_tp_usd"] = 0.05  # يُغلق عند أول ربح عائم صغير
+    engine_config.data["storage"]["database"] = str(tmp_path / "trades.db")
+
+    broker = PaperBroker(spec, balance=1000.0, spread=0.20)
+    feed = GrowingFeed(uptrend_bars, start=2)
+    data_logger = DataLogger(tmp_path / "trades.db")
+    bot = GridHedgeBot(engine_config, broker, feed, data_logger=data_logger)
+
+    bot.tick()  # تهيئة
+    for _ in range(len(uptrend_bars) - 2):
+        feed.advance(1)
+        bot.tick()
+
+    summary = data_logger.grid_summary()
+    assert summary["baskets"] >= 1, "لم يُسجَّل أي إغلاق سلة رغم هدف ربح ضئيل جداً"
+    assert summary["net_pnl"] != 0.0
+
+
+def test_engine_defaults_to_own_data_logger_when_none_given(engine_config, spec, uptrend_bars):
+    """إن لم يُمرَّر data_logger، يبني واحداً من storage.database — لا يسقط صامتاً."""
+    broker = PaperBroker(spec, balance=1000.0, spread=0.20)
+    feed = GrowingFeed(uptrend_bars, start=2)
+    bot = GridHedgeBot(engine_config, broker, feed)
+
+    assert bot.data_logger is not None
+    bot.tick()  # يجب ألا يرمي استثناءً

@@ -57,6 +57,9 @@ class GoldDragonBot:
         self.started_at = datetime.now(timezone.utc)
         self.last_scan: dict[str, Any] | None = None
         self._health_server: Any = None
+        # مرجع اختياري لبوت شبكة التحوّط، إن شُغّل الاثنان معاً (`run-all`) —
+        # صفحة المراقبة تعرض حالته أيضاً إذا كان مضبوطاً هنا قبل start().
+        self.grid_bot: Any = None
 
     # ═══════════════════════════════════════════════════════════════
     def start(self) -> None:
@@ -95,7 +98,7 @@ class GoldDragonBot:
             return
         from .infra.health import start_health_server
 
-        self._health_server = start_health_server(self, int(port))
+        self._health_server = start_health_server(self, int(port), grid_bot=self.grid_bot)
 
     def stop(self) -> None:
         if not self.is_running:
