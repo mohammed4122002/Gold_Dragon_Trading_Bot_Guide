@@ -133,8 +133,14 @@ class RiskManager:
         return str(self.state.get("lock_reason", "")) if self.is_locked else ""
 
     # القرار -----------------------------------------------------------------
-    def can_trade(self, balance: float, open_positions: int = 0,
-                  open_risk: float = 0.0) -> RiskDecision:
+    def daily_guard(self, balance: float) -> RiskDecision:
+        """الأقفال وحدود الخسارة/الـDrawdown فقط — بلا فحص عدد الصفقات أو المخاطرة المجمعة.
+
+        مستخرجة من ``can_trade`` لتُعاد الاستفادة منها من استراتيجيات أخرى
+        (مثل شبكة Buy Stop/Sell Stop) لا تنطبق عليها مفاهيم "مخاطرة الصفقة
+        الواحدة" أو "الحد الأقصى للصفقات المفتوحة" لكنها يجب أن تخضع لنفس
+        حد الخسارة اليومي/الأسبوعي والقفل الانتقامي والـDrawdown.
+        """
         self.state = self._roll_periods(self.state)
         peak = max(float(self.state.get("peak_balance", 0.0)), balance)
         self.state["peak_balance"] = peak
@@ -142,18 +148,8 @@ class RiskManager:
         if self.is_locked:
             return RiskDecision(False, f"قفل نشط: {self.lock_reason}")
 
-        if open_positions >= self.max_positions:
-            return RiskDecision(False, f"بلغت الحد الأقصى للصفقات المفتوحة ({self.max_positions})")
-
         if balance <= 0:
             return RiskDecision(False, "رصيد غير صالح")
-
-        if open_risk + self.risk_per_trade > self.max_total_risk + 1e-9:
-            return RiskDecision(
-                False,
-                f"المخاطرة المجمعة {(open_risk + self.risk_per_trade):.2%} "
-                f"تتجاوز السقف {self.max_total_risk:.2%}",
-            )
 
         daily_pct = float(self.state["daily_pnl"]) / balance if balance else 0.0
         if daily_pct <= -self.daily_loss_limit:
@@ -178,6 +174,24 @@ class RiskManager:
 
         self._save()
         return RiskDecision(True, "مسموح", {"drawdown": drawdown, "daily_pct": daily_pct})
+
+    def can_trade(self, balance: float, open_positions: int = 0,
+                  open_risk: float = 0.0) -> RiskDecision:
+        decision = self.daily_guard(balance)
+        if not decision.allowed:
+            return decision
+
+        if open_positions >= self.max_positions:
+            return RiskDecision(False, f"بلغت الحد الأقصى للصفقات المفتوحة ({self.max_positions})")
+
+        if open_risk + self.risk_per_trade > self.max_total_risk + 1e-9:
+            return RiskDecision(
+                False,
+                f"المخاطرة المجمعة {(open_risk + self.risk_per_trade):.2%} "
+                f"تتجاوز السقف {self.max_total_risk:.2%}",
+            )
+
+        return decision
 
     @staticmethod
     def _hours_to_midnight() -> float:
