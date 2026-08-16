@@ -28,6 +28,15 @@
 //
 // تحذير إلزامي: أداة تعليمية/تقنية. اختبرها Demo لا يقل عن 3 أشهر قبل أي
 // حساب حقيقي، وتأكد من مواصفات العقد (Point/ContractSize) لدى وسيطك.
+//
+// راجعها Claude يدوياً (بلا MetaEditor فعلي — لا بديل عن تصريفها فعلاً في
+// طرفيتك قبل أي تشغيل): أُصلح خطأ توقف التصريف بالكامل (EnsureSide كانت
+// تشير لمصفوفة من نطاق دالة أخرى)، وخطأ في CloseBasketAndCancelPending كان
+// يُسجّل ربح/خسارة مركز فشل إغلاقه فعلياً كأنه أُغلق (يُحتسب مرتين لاحقاً)،
+// وأُضيف رقم الحساب لبادئة GlobalVariables (كانت بلا هذا التمييز تتشارك
+// حالة القفل/الخسارة اليومية بين أي حسابين بنفس الرمز والـ Magic على نفس
+// الطرفية). لاحظ أيضاً: هذه النسخة لا تملك مكافئاً لطبقة KillSwitch
+// النهائية (terminate) في بايثون — فقط قفل مؤقت يُفكّ تلقائياً بعد ساعات.
 
 #property copyright "Gold Dragon Trading Bot Guide"
 #property link      ""
@@ -293,19 +302,38 @@ double CloseBasketAndCancelPending(const string reason)
    ulong posTickets[]; double entries[]; int posTypes[]; datetime times[];
    int posCount = CollectOurPositions(posTickets, entries, posTypes, times);
 
-   double closedPnl = BasketFloatingPnL(posTickets);
+   // تُقرأ الأرباح فوراً قبل محاولة كل إغلاق — بعد النجاح لن تُعاد قراءتها
+   // كمركز مفتوح. لا يُسجَّل إلا ما أُغلق فعلاً؛ مركز فشل إغلاقه يبقى مفتوحاً
+   // ومتتبَّعاً بشكل طبيعي في CollectOurPositions بالدورة القادمة — تسجيل
+   // ربحه/خسارته الآن كان سيُخطئ حالة المخاطرة (يُحتسب مرتين لاحقاً).
+   double closedPnl = 0.0;
+   int closedCount = 0;
    for(int i = 0; i < posCount; i++)
-      trade.PositionClose(posTickets[i]);
+   {
+      double pnl = 0.0;
+      if(PositionSelectByTicket(posTickets[i]))
+         pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      if(trade.PositionClose(posTickets[i]))
+      {
+         closedPnl += pnl;
+         closedCount++;
+      }
+      else
+         Print("⚠️ فشل إغلاق المركز #", posTickets[i], " retcode=", trade.ResultRetcode(),
+               " — سيبقى مفتوحاً ومتتبَّعاً ضمن السلة الحالية");
+   }
 
    ulong pendTickets[]; int pendTypes[]; double pendPrices[];
    int pendCount = CollectOurPending(pendTickets, pendTypes, pendPrices);
    for(int i = 0; i < pendCount; i++)
-      trade.OrderDelete(pendTickets[i]);
+      if(!trade.OrderDelete(pendTickets[i]))
+         Print("⚠️ فشل إلغاء الأمر المعلّق #", pendTickets[i], " retcode=", trade.ResultRetcode());
 
-   if(posCount > 0)
+   if(closedCount > 0)
    {
       RecordResult(closedPnl);
-      Print("📦 إغلاق السلة (", reason, ") — ", posCount, " صفقة، الناتج ", DoubleToString(closedPnl, 2), "$");
+      Print("📦 إغلاق السلة (", reason, ") — ", closedCount, "/", posCount, " صفقة، الناتج ",
+            DoubleToString(closedPnl, 2), "$");
    }
    return closedPnl;
 }
@@ -354,7 +382,7 @@ bool EnsureSide(const bool isBuy, const double &posEntries[], const int &posType
    int wantType = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
    bool found = false;
    double reference = price;
-   for(int i = 0; i < ArraySize(posTickets); i++)
+   for(int i = 0; i < ArraySize(posTypes); i++)
    {
       if(posTypes[i] != wantType)
          continue;
@@ -376,7 +404,12 @@ bool EnsureSide(const bool isBuy, const double &posEntries[], const int &posType
 //+------------------------------------------------------------------------+
 int OnInit()
 {
-   gPrefix = StringFormat("GDGRID_%s_%d_", _Symbol, InpMagic);
+   // رقم الحساب داخل البادئة: بدونه تتشارك حالة القفل/الخسارة اليومية
+   // بين أي حسابين يُشغَّلان بنفس الرمز والـ Magic على نفس الطرفية —
+   // GlobalVariables في MT5 على مستوى الطرفية كاملة لا الحساب وحده،
+   // فينتقل خطأً قفل أو خسارة حساب تجريبي إلى حساب حقيقي بعد تبديل الدخول.
+   gPrefix = StringFormat("GDGRID_%I64d_%s_%d_",
+                          (long)AccountInfoInteger(ACCOUNT_LOGIN), _Symbol, InpMagic);
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpSlippagePoints);
    trade.SetTypeFillingBySymbol(_Symbol);
