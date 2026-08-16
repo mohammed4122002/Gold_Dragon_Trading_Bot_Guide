@@ -35,8 +35,14 @@
 // يُسجّل ربح/خسارة مركز فشل إغلاقه فعلياً كأنه أُغلق (يُحتسب مرتين لاحقاً)،
 // وأُضيف رقم الحساب لبادئة GlobalVariables (كانت بلا هذا التمييز تتشارك
 // حالة القفل/الخسارة اليومية بين أي حسابين بنفس الرمز والـ Magic على نفس
-// الطرفية). لاحظ أيضاً: هذه النسخة لا تملك مكافئاً لطبقة KillSwitch
-// النهائية (terminate) في بايثون — فقط قفل مؤقت يُفكّ تلقائياً بعد ساعات.
+// الطرفية).
+//
+// 5) Kill Switch نهائي — طبقة ثانية أقسى فوق القفل المؤقت أعلاه، مطابقة
+//    لـ src/kill_switch.py: Drawdown 50% أو خسارة يومية 10% أو 5 خسارات
+//    متتالية توقف الشبكة توقفاً **لا يُفكّ تلقائياً أبداً** (بعكس القفل
+//    المؤقت في القسم 3 الذي ينتهي بعد ساعات محسوبة). الفكّ حصراً بتشغيل
+//    EA مع InpResetKillSwitch=true مرة واحدة. Drawdown 20% يُفعّل مستوى
+//    أخف (Pause) يُفكّ تلقائياً بعد InpKillDrawdownPauseHours.
 
 #property copyright "Gold Dragon Trading Bot Guide"
 #property link      ""
@@ -65,6 +71,19 @@ input int    InpConsecutiveLossesLockHours = 48;
 input group "== فلتر الاتجاه =="
 input bool   InpTrendGuardEnabled     = true;
 input int    InpMaxDirectionalLevels  = 5;     // أقصى صفقات متتالية بنفس الاتجاه
+
+input group "== Kill Switch نهائي (أقسى من القفل المؤقت أعلاه) =="
+input bool   InpKillSwitchEnabled            = true;
+input double InpKillDrawdownPausePercent     = 20.0;  // % — إيقاف مؤقت يُفكّ تلقائياً
+input int    InpKillDrawdownPauseHours       = 24;
+input double InpKillDrawdownTerminatePercent = 50.0;  // % — إنهاء نهائي، لا يُفكّ تلقائياً أبداً
+input double InpKillDailyLossTerminatePercent= 10.0;  // % — إنهاء نهائي
+input int    InpKillConsecutiveLossesTerminate = 5;   // إنهاء نهائي
+
+input group "== إعادة تعيين يدوية =="
+// اضبطها true ثم أعد إرفاق الـEA مرة واحدة لفكّ الإنهاء النهائي — أعدها
+// false بعد ذلك، وإلا سيُعاد الفكّ تلقائياً في كل إعادة تشغيل للـEA.
+input bool   InpResetKillSwitch     = false;
 
 input group "== عام =="
 input int    InpMagic               = 20260816;
@@ -400,6 +419,86 @@ bool EnsureSide(const bool isBuy, const double &posEntries[], const int &posType
 }
 
 //+------------------------------------------------------------------------+
+//| Kill Switch نهائي — طبقة ثانية أقسى، مطابقة لـ src/kill_switch.py       |
+//| GlobalVariables لا تخزّن نصوصاً؛ السبب يُطبع فوراً عبر Print فقط ولا     |
+//| يُحفظ — الحالة المحفوظة (نشط/مستوى/حتى-متى) كافية لتحديد القرار.        |
+//+------------------------------------------------------------------------+
+#define KILL_LEVEL_PAUSE     1
+#define KILL_LEVEL_TERMINATE 2
+
+bool KillSwitchActive()
+{
+   if(GVGet("kill_active", 0.0) < 0.5)
+      return false;
+   if((int)GVGet("kill_level", 0.0) == KILL_LEVEL_TERMINATE)
+      return true;   // نهائي — لا يُفكّ تلقائياً أبداً مهما مرّ من وقت
+
+   double until = GVGet("kill_until", 0.0);
+   if(until > 0 && TimeCurrent() >= (datetime)until)
+   {
+      GVSet("kill_active", 0.0);
+      GVSet("kill_level", 0.0);
+      GVSet("kill_until", 0.0);
+      Print("✅ انتهت مدة Kill Switch المؤقت (Pause) — استئناف تلقائي");
+      return false;
+   }
+   return true;
+}
+
+void TriggerKillSwitch(const int level, const string reason)
+{
+   GVSet("kill_active", 1.0);
+   GVSet("kill_level", (double)level);
+   GVSet("kill_until", level == KILL_LEVEL_PAUSE
+         ? (double)(TimeCurrent() + InpKillDrawdownPauseHours * 3600) : 0.0);
+
+   double closedPnl = CloseBasketAndCancelPending("kill_switch");
+
+   string levelName = (level == KILL_LEVEL_TERMINATE) ? "TERMINATE (نهائي)" : "PAUSE (مؤقت)";
+   Print("🚨 KILL SWITCH (", levelName, "): ", reason, " — إغلاق السلة: ",
+         DoubleToString(closedPnl, 2), "$");
+   if(level == KILL_LEVEL_TERMINATE)
+      Print("   ⛔ إيقاف نهائي — لن يُستأنف تلقائياً. للفكّ: اضبط "
+            "InpResetKillSwitch=true وأعد إرفاق الـEA مرة واحدة.");
+}
+
+// يُستدعى كل تِك قبل DailyGuardAllows — حدوده أقسى (Terminate) من حدود
+// daily_guard اللينة، تماماً كما GridHedgeBot.tick() في بايثون يستدعي
+// kill_switch.auto_check() قبل risk.can_trade() لا بعده.
+void KillSwitchAutoCheck()
+{
+   if(!InpKillSwitchEnabled || KillSwitchActive())
+      return;
+
+   // يُستدعى قبل DailyGuardAllows، وهو من كان يُصفّر daily_pnl/weekly_pnl
+   // عند تغيّر اليوم/الأسبوع — بدون هذا الاستدعاء هنا أيضاً، أول تِك في يوم
+   // جديد قد يُقيَّم بخسارة الأمس الفائتة قبل أن تُصفَّر. الدالة كسولة
+   // (idempotent)؛ استدعاؤها هنا وفي DailyGuardAllows لاحقاً بنفس التِك آمن.
+   RollPeriods();
+
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double peak = MathMax(GVGet("peak_balance", 0.0), balance);
+   GVSet("peak_balance", peak);
+
+   double drawdown = (peak > 0) ? (peak - balance) / peak : 0.0;
+   double dailyLossPct = -MathMin(GVGet("daily_pnl", 0.0), 0.0) / MathMax(balance, 1.0);
+   int consecutiveLosses = (int)GVGet("consecutive_losses", 0.0);
+
+   if(drawdown >= InpKillDrawdownTerminatePercent / 100.0)
+      TriggerKillSwitch(KILL_LEVEL_TERMINATE,
+                        StringFormat("Drawdown %.2f%% تجاوز حد الإنهاء", drawdown * 100.0));
+   else if(dailyLossPct >= InpKillDailyLossTerminatePercent / 100.0)
+      TriggerKillSwitch(KILL_LEVEL_TERMINATE,
+                        StringFormat("خسارة يومية %.2f%% تجاوزت حد الإنهاء", dailyLossPct * 100.0));
+   else if(consecutiveLosses >= InpKillConsecutiveLossesTerminate)
+      TriggerKillSwitch(KILL_LEVEL_TERMINATE,
+                        StringFormat("%d خسارات متتالية", consecutiveLosses));
+   else if(drawdown >= InpKillDrawdownPausePercent / 100.0)
+      TriggerKillSwitch(KILL_LEVEL_PAUSE,
+                        StringFormat("Drawdown %.2f%% تجاوز حد الإيقاف المؤقت", drawdown * 100.0));
+}
+
+//+------------------------------------------------------------------------+
 //| OnInit / OnDeinit                                                       |
 //+------------------------------------------------------------------------+
 int OnInit()
@@ -414,8 +513,21 @@ int OnInit()
    trade.SetDeviationInPoints(InpSlippagePoints);
    trade.SetTypeFillingBySymbol(_Symbol);
    RollPeriods();
+
+   if(InpResetKillSwitch)
+   {
+      GVSet("kill_active", 0.0);
+      GVSet("kill_level", 0.0);
+      GVSet("kill_until", 0.0);
+      GVSet("consecutive_losses", 0.0);
+      Print("✅ أُعيد تعيين Kill Switch يدوياً — أعد InpResetKillSwitch إلى false الآن، "
+            "وإلا سيُعاد الفكّ في كل إعادة تشغيل قادمة للـEA.");
+   }
+
    Print("🕸️ GoldDragon_HedgeGrid جاهز — ", _Symbol, " | لوت/مستوى ", InpLotPerLevel,
-         " | خطوة ", InpGridStepUSD, "$ | حد يومي ", InpDailyLossLimitPercent, "%");
+         " | خطوة ", InpGridStepUSD, "$ | حد يومي ", InpDailyLossLimitPercent, "%",
+         " | Kill Switch: ", InpKillSwitchEnabled ? "مفعّل" : "معطّل",
+         KillSwitchActive() ? " (نشط حالياً ⛔)" : "");
    return(INIT_SUCCEEDED);
 }
 
@@ -429,10 +541,24 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------------+
 void OnTick()
 {
+   // 0) Kill Switch أولاً — أقسى وأرخص فحص، قبل حتى قراءة المراكز، تماماً
+   // كما bot_engine.py يفحص kill_switch.active قبل أي شيء آخر في scan_market().
+   if(KillSwitchActive())
+   {
+      int level = (int)GVGet("kill_level", 0.0);
+      Comment(level == KILL_LEVEL_TERMINATE
+              ? "⛔ Kill Switch نهائي — يتطلب InpResetKillSwitch=true يدوياً"
+              : "⏸️ Kill Switch مؤقت — سيُفكّ تلقائياً");
+      return;
+   }
+   KillSwitchAutoCheck();
+   if(KillSwitchActive())
+      return;   // تفعّل للتو ضمن هذا التِك — أُغلقت السلة، لا داعٍ لمتابعة الدورة
+
    ulong posTickets[]; double posEntries[]; int posTypes[]; datetime posTimes[];
    int posCount = CollectOurPositions(posTickets, posEntries, posTypes, posTimes);
 
-   // 1) الحماية أولاً — نفس ترتيب bot_engine.py: القفل/الحدود قبل أي تداول
+   // 1) الحماية اللينة — نفس ترتيب bot_engine.py: القفل/الحدود قبل أي تداول
    string blockReason;
    if(!DailyGuardAllows(blockReason))
    {
