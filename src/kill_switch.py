@@ -19,11 +19,15 @@ log = get_logger(__name__)
 
 
 class KillSwitch:
-    def __init__(self, config: Any, broker: Any, notifier: Any) -> None:
+    def __init__(self, config: Any, broker: Any, notifier: Any,
+                 state_file: Path | str | None = None) -> None:
         self.enabled = bool(config.get("kill_switch.enabled", True))
         self.broker = broker
         self.notifier = notifier
-        self.path: Path = config.path("kill_switch.state_file", "state/kill_switch.json")
+        self.path: Path = (
+            Path(state_file) if state_file
+            else config.path("kill_switch.state_file", "state/kill_switch.json")
+        )
 
         self.drawdown_pause = float(config.get("kill_switch.drawdown_pause", 0.20))
         self.pause_hours = float(config.get("kill_switch.drawdown_pause_hours", 24))

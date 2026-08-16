@@ -125,7 +125,7 @@ def load_config(config_dir: Path | str | None = None) -> Config:
     _load_dotenv(root / ".env")
 
     merged: dict[str, Any] = {}
-    for name in ("settings.yaml", "risk.yaml", "symbols.yaml"):
+    for name in ("settings.yaml", "risk.yaml", "symbols.yaml", "grid.yaml"):
         file = cdir / name
         if not file.exists():
             raise ConfigError(f"ملف إعدادات مفقود: {file}")
@@ -193,3 +193,17 @@ def _validate(cfg: Config) -> None:
         raise ConfigError(
             "وضع التحدي مُفعّل دون إقرار عقد التحدي — اضبط challenge_mode.accepted_contract: true"
         )
+
+    if cfg.get("grid.enabled"):
+        if float(cfg.get("grid.lot_per_level", 0)) <= 0:
+            raise ConfigError("grid.lot_per_level يجب أن يكون أكبر من صفر")
+        if int(cfg.get("grid.max_levels", 0)) < 2:
+            raise ConfigError("grid.max_levels يجب أن يكون 2 على الأقل (جانب لكل اتجاه)")
+        step_mode = str(cfg.get("grid.step_mode", "fixed"))
+        if step_mode not in {"fixed", "atr"}:
+            raise ConfigError(f"grid.step_mode غير مدعوم: {step_mode}")
+        if step_mode == "fixed" and float(cfg.get("grid.step_fixed", 0)) <= 0:
+            raise ConfigError("grid.step_fixed يجب أن يكون أكبر من صفر")
+        basket_mode = str(cfg.get("grid.basket_tp_mode", "fixed"))
+        if basket_mode not in {"fixed", "per_lot"}:
+            raise ConfigError(f"grid.basket_tp_mode غير مدعوم: {basket_mode}")

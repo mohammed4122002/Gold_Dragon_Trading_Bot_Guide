@@ -4,6 +4,8 @@
     python -m src.main analyze                 # تحليل واحد وطباعة التقرير
     python -m src.main run                     # تشغيل الحلقة (dry-run افتراضياً)
     python -m src.main run --live              # تشغيل حقيقي — يتطلب تأكيداً
+    python -m src.main grid --once             # دورة واحدة من شبكة Buy Stop/Sell Stop
+    python -m src.main grid                    # تشغيل حلقة الشبكة (dry-run افتراضياً)
     python -m src.main backtest --bars 3000
     python -m src.main psych --state calm
     python -m src.main kill --reset
@@ -18,6 +20,7 @@ from typing import Any
 
 from .bot_engine import GoldDragonBot
 from .config_loader import ConfigError, load_config
+from .grid_engine import GridHedgeBot
 from .infra.broker import Broker, MT5Broker, PaperBroker, SymbolSpec
 from .infra.data_feed import DataFeedError, build_feed
 from .infra.data_logger import DataLogger
@@ -237,6 +240,61 @@ def cmd_run(config: Any, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_grid(config: Any, args: argparse.Namespace) -> int:
+    """شبكة تحوّط Buy Stop/Sell Stop — استراتيجية منفصلة، راجع config/grid.yaml."""
+    print(BANNER)
+    print(DISCLAIMER)
+    print(
+        "\n🕸️  شبكة تحوّط: تربح من التذبذب العرضي وتخسر بعنف في اختراق اتجاهي بلا فلتر.\n"
+        "    اقرأ config/grid.yaml قبل التشغيل الحي — كل حد حماية فيه إلزامي."
+    )
+
+    if args.reset_kill:
+        notifier = NotificationService(config)
+        kill = KillSwitch(
+            config, build_broker(config, force_paper=True), notifier,
+            state_file=config.path("grid.kill_switch_state_file", "state/grid_kill_switch.json"),
+        )
+        kill.reset(args.note or "reset from CLI")
+        print("✅ أُعيد تعيين Kill Switch الخاص بالشبكة")
+        return 0
+
+    if not config.get("grid.enabled", False):
+        print("\n⚠️  grid.enabled: false في config/grid.yaml — فعّله أولاً قبل التشغيل")
+        return 2
+
+    if args.live:
+        if config.dry_run:
+            print("\n⚠️  --live يتطلب bot.dry_run: false في settings.yaml")
+            return 2
+        confirm = input("\n🔴 تشغيل شبكة التحوّط على حساب حقيقي. اكتب LIVE للتأكيد: ").strip()
+        if confirm != "LIVE":
+            print("أُلغي التشغيل.")
+            return 3
+    elif not config.dry_run:
+        print("\n⚠️  الإعدادات على وضع حقيقي — استخدم --live للتأكيد الصريح.")
+        return 2
+
+    problems = preflight_storage(config)
+    if problems:
+        print("\n❌ التخزين غير قابل للكتابة — أوقفت التشغيل:")
+        for problem in problems:
+            print(f"   • {problem}")
+        return 4
+
+    broker = build_broker(config, force_paper=not args.live)
+    feed = build_feed(config)
+    bot = GridHedgeBot(config, broker, feed)
+
+    if args.once:
+        outcome = bot.tick()
+        print(f"\nالنتيجة: {outcome['status']} — {outcome['detail']}")
+        return 0
+
+    bot.start()
+    return 0
+
+
 def cmd_backtest(config: Any, args: argparse.Namespace) -> int:
     from .backtest import Backtester
 
@@ -405,6 +463,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--live", action="store_true", help="تشغيل حقيقي (يتطلب تأكيداً)")
     run.add_argument("--once", action="store_true", help="دورة واحدة فقط ثم الخروج")
 
+    grid = sub.add_parser("grid", help="تشغيل شبكة تحوّط Buy Stop/Sell Stop (راجع config/grid.yaml)")
+    grid.add_argument("--live", action="store_true", help="تشغيل حقيقي (يتطلب تأكيداً)")
+    grid.add_argument("--once", action="store_true", help="دورة واحدة فقط ثم الخروج")
+    grid.add_argument("--reset-kill", action="store_true",
+                      help="فكّ Kill Switch الخاص بالشبكة يدوياً")
+    grid.add_argument("--note", default="")
+
     backtest = sub.add_parser("backtest", help="اختبار تاريخي")
     backtest.add_argument("--bars", type=int, default=3000, help="عدد شموع M15")
     backtest.add_argument("--warmup", type=int, default=250, help="شموع الإحماء")
@@ -432,6 +497,7 @@ COMMANDS = {
     "doctor": cmd_doctor,
     "analyze": cmd_analyze,
     "run": cmd_run,
+    "grid": cmd_grid,
     "backtest": cmd_backtest,
     "psych": cmd_psych,
     "kill": cmd_kill,

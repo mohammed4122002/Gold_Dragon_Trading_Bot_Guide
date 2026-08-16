@@ -82,3 +82,67 @@ def test_close_all(broker):
     broker.set_price(2402.0)
     broker.close_all("kill_switch")
     assert broker.positions() == []
+
+
+# الأوامر المعلّقة (Buy Stop / Sell Stop) ---------------------------------
+def test_place_pending_appears_in_pending_orders(broker):
+    ticket = broker.place_pending("buy_stop", 0.01, 2410.0, comment="GDGRID")
+    orders = broker.pending_orders()
+    assert len(orders) == 1
+    assert orders[0].ticket == ticket
+    assert orders[0].order_type == "buy_stop"
+    assert orders[0].price == 2410.0
+    assert orders[0].comment == "GDGRID"
+
+
+def test_cancel_pending_removes_order(broker):
+    ticket = broker.place_pending("sell_stop", 0.01, 2390.0)
+    assert broker.cancel_pending(ticket)
+    assert broker.pending_orders() == []
+    assert not broker.cancel_pending(ticket)  # مُلغى بالفعل
+
+
+def test_buy_stop_fills_on_tick_when_ask_reaches_price(broker):
+    broker.place_pending("buy_stop", 0.01, 2410.0)
+    broker.set_price(2410.5)  # ask = 2410.5 + 0.20 > 2410.0
+    assert broker.pending_orders() == []
+    positions = broker.positions()
+    assert len(positions) == 1
+    assert positions[0].direction == "buy"
+    assert positions[0].entry == pytest.approx(2410.0 + broker.slippage, abs=0.01)
+
+
+def test_sell_stop_fills_on_tick_when_bid_reaches_price(broker):
+    broker.place_pending("sell_stop", 0.01, 2390.0)
+    broker.set_price(2389.5)  # bid = 2389.5 <= 2390.0
+    assert broker.pending_orders() == []
+    positions = broker.positions()
+    assert len(positions) == 1
+    assert positions[0].direction == "sell"
+
+
+def test_pending_order_untouched_below_trigger(broker):
+    broker.place_pending("buy_stop", 0.01, 2450.0)
+    broker.set_price(2405.0)
+    assert len(broker.pending_orders()) == 1
+    assert broker.positions() == []
+
+
+def test_pending_fills_inside_bar_high_low(broker):
+    broker.place_pending("buy_stop", 0.01, 2410.0)
+    broker.place_pending("sell_stop", 0.01, 2390.0)
+    events = broker.process_bar(high=2412.0, low=2400.0, close=2408.0)
+    # فقط Buy Stop انضرب — الشمعة لم تلمس 2390
+    assert len(events) == 1
+    assert len(broker.positions()) == 1
+    assert broker.positions()[0].direction == "buy"
+    assert len(broker.pending_orders()) == 1  # Sell Stop ما زال معلّقاً
+
+
+def test_filled_pending_position_has_no_sl_tp(broker):
+    """صفقات الشبكة تُدار كسلة، لا بوقف/هدف فردي."""
+    broker.place_pending("buy_stop", 0.01, 2410.0)
+    broker.set_price(2411.0)
+    position = broker.positions()[0]
+    assert position.sl == 0.0
+    assert position.tp == 0.0

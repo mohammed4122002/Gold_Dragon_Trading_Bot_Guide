@@ -18,6 +18,7 @@ from .logger import get_logger
 log = get_logger(__name__)
 
 Side = Literal["buy", "sell"]
+PendingType = Literal["buy_stop", "sell_stop"]
 
 
 class BrokerError(RuntimeError):
@@ -62,6 +63,17 @@ class BrokerPosition:
     comment: str = ""
     profit: float = 0.0
     meta: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PendingOrder:
+    ticket: int
+    symbol: str
+    order_type: PendingType
+    volume: float
+    price: float
+    comment: str = ""
+    placed_at: datetime | None = None
 
 
 class Broker(ABC):
@@ -117,6 +129,27 @@ class Broker(ABC):
             total += self.close(pos.ticket, reason=reason)
         return total
 
+    # أوامر معلّقة — اختيارية: الوسطاء التي لا تحتاجها (مثل MetaApiBroker حالياً)
+    # تبقى قابلة للتشغيل دون تعديل؛ من يستخدمها (شبكة Buy Stop/Sell Stop) يحتاج
+    # وسيطاً يطبّقها فعلاً (PaperBroker أو MT5Broker).
+    def place_pending(
+        self, order_type: PendingType, volume: float, price: float, comment: str = ""
+    ) -> int:
+        raise NotImplementedError(f"{type(self).__name__} لا يدعم الأوامر المعلّقة")
+
+    def cancel_pending(self, ticket: int) -> bool:
+        raise NotImplementedError(f"{type(self).__name__} لا يدعم الأوامر المعلّقة")
+
+    def pending_orders(self) -> list[PendingOrder]:
+        raise NotImplementedError(f"{type(self).__name__} لا يدعم الأوامر المعلّقة")
+
+    def cancel_all_pending(self, reason: str = "") -> int:
+        count = 0
+        for order in list(self.pending_orders()):
+            if self.cancel_pending(order.ticket):
+                count += 1
+        return count
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  PaperBroker — محاكاة تنفيذ كاملة (dry-run + backtest)
@@ -143,6 +176,7 @@ class PaperBroker(Broker):
         self.slippage = slippage
         self._bid = 0.0
         self._positions: dict[int, BrokerPosition] = {}
+        self._pending: dict[int, PendingOrder] = {}
         self._tickets = itertools.count(1000)
         self.closed: list[dict[str, Any]] = []
         self.now: datetime = datetime.now(timezone.utc)
@@ -159,6 +193,8 @@ class PaperBroker(Broker):
         self._bid = bid
         if when:
             self.now = when
+        if self._pending:
+            self._fill_pending(high=bid + self._spread, low=bid)
 
     def tick(self) -> tuple[float, float]:
         if self._bid <= 0:
@@ -185,15 +221,9 @@ class PaperBroker(Broker):
         return gross - self.commission_per_lot * pos.volume
 
     # الأوامر ----------------------------------------------------------------
-    def market_order(
-        self, direction: Side, volume: float, sl: float, tp: float, comment: str = ""
+    def _open_position(
+        self, direction: Side, volume: float, price: float, sl: float, tp: float, comment: str
     ) -> int:
-        volume = self.spec.normalize_lot(volume)
-        if volume <= 0:
-            raise BrokerError("حجم غير صالح بعد التقريب (أصغر من الحد الأدنى)")
-
-        bid, ask = self.tick()
-        price = (ask + self.slippage) if direction == "buy" else (bid - self.slippage)
         ticket = next(self._tickets)
         self._positions[ticket] = BrokerPosition(
             ticket=ticket,
@@ -206,11 +236,80 @@ class PaperBroker(Broker):
             opened_at=self.now,
             comment=comment,
         )
+        return ticket
+
+    def market_order(
+        self, direction: Side, volume: float, sl: float, tp: float, comment: str = ""
+    ) -> int:
+        volume = self.spec.normalize_lot(volume)
+        if volume <= 0:
+            raise BrokerError("حجم غير صالح بعد التقريب (أصغر من الحد الأدنى)")
+
+        bid, ask = self.tick()
+        price = (ask + self.slippage) if direction == "buy" else (bid - self.slippage)
+        ticket = self._open_position(direction, volume, price, sl, tp, comment)
         log.info(
             "PAPER فتح #%s %s %.2f لوت @ %.2f (SL %.2f / TP %.2f)",
             ticket, direction, volume, price, sl, tp,
         )
         return ticket
+
+    # الأوامر المعلّقة (Buy Stop / Sell Stop) ---------------------------------
+    def place_pending(
+        self, order_type: PendingType, volume: float, price: float, comment: str = ""
+    ) -> int:
+        volume = self.spec.normalize_lot(volume)
+        if volume <= 0:
+            raise BrokerError("حجم غير صالح بعد التقريب (أصغر من الحد الأدنى)")
+        ticket = next(self._tickets)
+        self._pending[ticket] = PendingOrder(
+            ticket=ticket,
+            symbol=self.spec.name,
+            order_type=order_type,
+            volume=volume,
+            price=self.spec.normalize_price(price),
+            comment=comment,
+            placed_at=self.now,
+        )
+        log.info("PAPER أمر معلّق #%s %s %.2f لوت @ %.2f", ticket, order_type, volume, price)
+        return ticket
+
+    def cancel_pending(self, ticket: int) -> bool:
+        removed = self._pending.pop(ticket, None)
+        if removed:
+            log.info("PAPER إلغاء أمر معلّق #%s", ticket)
+        return removed is not None
+
+    def pending_orders(self) -> list[PendingOrder]:
+        return list(self._pending.values())
+
+    def _fill_pending(self, high: float, low: float) -> list[dict[str, Any]]:
+        """فحص انضراب الأوامر المعلّقة ضمن [low, high] (تِك أو مدى شمعة كاملة)."""
+        events: list[dict[str, Any]] = []
+        for ticket, order in list(self._pending.items()):
+            triggered = (
+                high >= order.price if order.order_type == "buy_stop" else low <= order.price
+            )
+            if not triggered:
+                continue
+            direction: Side = "buy" if order.order_type == "buy_stop" else "sell"
+            fill_price = (
+                order.price + self.slippage if direction == "buy"
+                else order.price - self.slippage
+            )
+            new_ticket = self._open_position(
+                direction, order.volume, fill_price, 0.0, 0.0, order.comment
+            )
+            del self._pending[ticket]
+            log.info(
+                "PAPER تنفيذ أمر معلّق #%s → مركز #%s %s %.2f لوت @ %.2f",
+                ticket, new_ticket, direction, order.volume, fill_price,
+            )
+            events.append({
+                "pending_ticket": ticket, "ticket": new_ticket, "direction": direction,
+                "price": fill_price, "comment": order.comment,
+            })
+        return events
 
     def modify(self, ticket: int, sl: float | None = None, tp: float | None = None) -> bool:
         pos = self._positions.get(ticket)
@@ -277,7 +376,7 @@ class PaperBroker(Broker):
         """
         if when:
             self.now = when
-        events: list[dict[str, Any]] = []
+        events: list[dict[str, Any]] = self._fill_pending(high=high, low=low)
 
         for pos in list(self._positions.values()):
             hit_sl = (low <= pos.sl) if pos.direction == "buy" else (high >= pos.sl)
@@ -412,6 +511,69 @@ class MT5Broker(Broker):
             code = getattr(result, "retcode", "None")
             raise BrokerError(f"رفض الأمر: retcode={code} {getattr(result, 'comment', '')}")
         return int(result.order)
+
+    # الأوامر المعلّقة (Buy Stop / Sell Stop) ---------------------------------
+    def place_pending(
+        self, order_type: PendingType, volume: float, price: float, comment: str = ""
+    ) -> int:
+        mt5 = self._api()
+        volume = self.spec.normalize_lot(volume)
+        if volume <= 0:
+            raise BrokerError("حجم غير صالح بعد التقريب")
+
+        mt5_type = mt5.ORDER_TYPE_BUY_STOP if order_type == "buy_stop" else mt5.ORDER_TYPE_SELL_STOP
+        request = {
+            "action": mt5.TRADE_ACTION_PENDING,
+            "symbol": self.spec.name,
+            "volume": volume,
+            "type": mt5_type,
+            "price": self.spec.normalize_price(price),
+            "deviation": self.deviation,
+            "magic": self.magic,
+            "comment": comment[:31],
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": self._filling_mode(),
+        }
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            code = getattr(result, "retcode", "None")
+            raise BrokerError(f"رفض الأمر المعلّق: retcode={code} {getattr(result, 'comment', '')}")
+        return int(result.order)
+
+    def cancel_pending(self, ticket: int) -> bool:
+        mt5 = self._api()
+        request = {"action": mt5.TRADE_ACTION_REMOVE, "order": ticket}
+        result = mt5.order_send(request)
+        ok = result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
+        if not ok:
+            log.error("فشل إلغاء الأمر المعلّق #%s: %s", ticket, getattr(result, "retcode", "None"))
+        return ok
+
+    def pending_orders(self) -> list[PendingOrder]:
+        mt5 = self._api()
+        raw = mt5.orders_get(symbol=self.spec.name) or []
+        out: list[PendingOrder] = []
+        for order in raw:
+            if order.magic != self.magic:
+                continue
+            if order.type == mt5.ORDER_TYPE_BUY_STOP:
+                order_type: PendingType = "buy_stop"
+            elif order.type == mt5.ORDER_TYPE_SELL_STOP:
+                order_type = "sell_stop"
+            else:
+                continue  # أنواع أوامر أخرى (Limit مثلاً) لا تخص الشبكة
+            out.append(
+                PendingOrder(
+                    ticket=int(order.ticket),
+                    symbol=order.symbol,
+                    order_type=order_type,
+                    volume=float(order.volume_current),
+                    price=float(order.price_open),
+                    comment=order.comment,
+                    placed_at=datetime.fromtimestamp(order.time_setup, tz=timezone.utc),
+                )
+            )
+        return out
 
     def _filling_mode(self) -> Any:
         """اختيار وضع التعبئة المدعوم فعلياً — يختلف بين الوسطاء."""
