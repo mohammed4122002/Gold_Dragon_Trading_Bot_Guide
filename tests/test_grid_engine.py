@@ -38,11 +38,20 @@ def uptrend_bars():
 
 @pytest.fixture
 def engine_config(config, tmp_path):
+    """نفس فلسفة fixture ``grid`` في test_grid_hedge.py: حراس الشبكة السريعة
+    مُطفأة هنا ليختبر هذا الملف *المحرك* (الدورة، مصدر البيانات، الحالة،
+    التسجيل) لا سلوك تلك الحراس — لكلٍّ منها اختباراتها الخاصة."""
     config.data["grid"]["enabled"] = True
     config.data["grid"]["step_mode"] = "fixed"
     config.data["grid"]["step_fixed"] = 3.0
+    config.data["grid"]["basket_tp_mode"] = "fixed"
     config.data["grid"]["basket_tp_usd"] = 100000.0
     config.data["grid"]["max_levels"] = 12
+    config.data["grid"]["pair_harvest"]["enabled"] = False
+    config.data["grid"]["max_basket_age_minutes"] = 0
+    config.data["grid"]["cooldown_seconds_after_close"] = 0
+    config.data["grid"]["execution_guard"]["max_spread"] = 0.0
+    config.data["grid"]["execution_guard"]["min_stop_distance_usd"] = 0.0
     config.data["grid"]["risk_state_file"] = str(tmp_path / "grid_risk_state.json")
     config.data["grid"]["kill_switch_state_file"] = str(tmp_path / "grid_kill_switch.json")
     return config

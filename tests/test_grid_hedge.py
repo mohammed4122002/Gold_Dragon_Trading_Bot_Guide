@@ -28,11 +28,23 @@ def risk(config, spec, tmp_path):
 
 @pytest.fixture
 def grid(config, broker, risk):
+    """شبكة بإعدادات "عارية": هدف ثابت وكل حراس الشبكة السريعة مُطفأة.
+
+    كل اختبار يخص ميزة من ميزات الشبكة السريعة (cost_plus / حصاد الأزواج /
+    التهدئة / بوابة السبريد / عمر السلة) يُفعّلها صراحةً عنده — فيبقى واضحاً
+    أيّ سلوك بالضبط يختبره كل اختبار، ولا تتسرّب ميزة إلى اختبار ميزة أخرى.
+    """
+    config.data["grid"]["basket_tp_mode"] = "fixed"
     config.data["grid"]["basket_tp_usd"] = 1000.0  # لا يُغلق تلقائياً إلا حين نطلبه صراحة
     config.data["grid"]["max_basket_loss_pct"] = 1.0  # يعطّل القطع المبكر افتراضياً في الاختبارات
     config.data["grid"]["step_fixed"] = 3.0
     config.data["grid"]["max_levels"] = 12
     config.data["grid"]["trend_guard"]["max_directional_levels"] = 5
+    config.data["grid"]["pair_harvest"]["enabled"] = False
+    config.data["grid"]["max_basket_age_minutes"] = 0
+    config.data["grid"]["cooldown_seconds_after_close"] = 0
+    config.data["grid"]["execution_guard"]["max_spread"] = 0.0
+    config.data["grid"]["execution_guard"]["min_stop_distance_usd"] = 0.0
     return HedgeGridStrategy(config, broker, risk)
 
 

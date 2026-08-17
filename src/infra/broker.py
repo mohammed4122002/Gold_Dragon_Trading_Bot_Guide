@@ -34,6 +34,11 @@ class SymbolSpec:
     max_lot: float = 10.0
     lot_step: float = 0.01
     point: float = 0.01
+    # أدنى مسافة سعرية يقبلها الوسيط بين أمر معلّق والسعر الحالي. صفر = بلا
+    # قيد. تُقرأ من الوسيط عند الاتصال (MT5: trade_stops_level × point).
+    # مهمة عند تضييق خطوة الشبكة: أمر أقرب من هذه المسافة يُرفض بـ retcode
+    # 10016 (Invalid stops) — فتتوقف الشبكة عن التمدد بصمت.
+    stops_level: float = 0.0
 
     def normalize_lot(self, lot: float) -> float:
         """تقريب الحجم لأقرب خطوة صالحة، ثم قصّه ضمن حدود الوسيط."""
@@ -255,12 +260,35 @@ class PaperBroker(Broker):
         return ticket
 
     # الأوامر المعلّقة (Buy Stop / Sell Stop) ---------------------------------
+    def _validate_pending_distance(self, order_type: PendingType, price: float) -> None:
+        """محاكاة رفض الوسيط لأمر معلّق أقرب من اللازم أو بالجهة الخاطئة.
+
+        وسيط حقيقي يرفض بـ retcode 10016 (Invalid stops) أمر Buy Stop تحت
+        السوق أو أقرب من ``stops_level``. بدون محاكاة هذا الرفض هنا، تنجح
+        الشبكة الضيقة في الاختبار وتفشل صامتة عند الوسيط الحقيقي.
+        """
+        if self._bid <= 0:
+            return  # لا سعر بعد — لا شيء نقيس عليه
+        bid, ask = self.tick()
+        distance = (price - ask) if order_type == "buy_stop" else (bid - price)
+        if distance <= 0:
+            raise BrokerError(
+                f"أمر {order_type} بسعر {price:.2f} بالجهة الخاطئة من السوق "
+                f"(bid={bid:.2f} ask={ask:.2f})"
+            )
+        if distance < self.spec.stops_level - 1e-9:
+            raise BrokerError(
+                f"أمر {order_type} بسعر {price:.2f} يبعد {distance:.2f} فقط عن السوق — "
+                f"أدنى مسافة يقبلها الوسيط {self.spec.stops_level:.2f}"
+            )
+
     def place_pending(
         self, order_type: PendingType, volume: float, price: float, comment: str = ""
     ) -> int:
         volume = self.spec.normalize_lot(volume)
         if volume <= 0:
             raise BrokerError("حجم غير صالح بعد التقريب (أصغر من الحد الأدنى)")
+        self._validate_pending_distance(order_type, price)
         ticket = next(self._tickets)
         self._pending[ticket] = PendingOrder(
             ticket=ticket,
@@ -456,8 +484,16 @@ class MT5Broker(Broker):
         self.spec.max_lot = info.volume_max
         self.spec.lot_step = info.volume_step
         self.spec.point = info.point
-        log.info("MT5 متصل | %s | contract_size=%s min_lot=%s",
-                 self.spec.name, self.spec.contract_size, self.spec.min_lot)
+        # أدنى مسافة لأمر معلّق عن السوق. كثير من الوسطاء يعيدونها صفراً
+        # (بلا قيد ثابت) ويطبّقون بدلها قيداً ديناميكياً على السبريد —
+        # لذلك المسافة الفعلية المستخدمة في الشبكة تأخذ الأكبر بين هذه
+        # القيمة وهامش أمان من الإعدادات.
+        self.spec.stops_level = float(
+            getattr(info, "trade_stops_level", 0) or 0
+        ) * self.spec.point
+        log.info("MT5 متصل | %s | contract_size=%s min_lot=%s stops_level=%.2f",
+                 self.spec.name, self.spec.contract_size, self.spec.min_lot,
+                 self.spec.stops_level)
 
     def shutdown(self) -> None:
         if self._mt5 is not None:

@@ -266,11 +266,24 @@ class RiskManager:
         return total / balance
 
     # التسجيل ----------------------------------------------------------------
-    def record_result(self, pnl: float) -> None:
+    def record_result(self, pnl: float, count_streak: bool = True) -> None:
+        """تسجيل نتيجة محقّقة في عدّادات اليوم/الأسبوع.
+
+        ``count_streak=False`` يسجّل الربح/الخسارة في الحدود اليومية دون أن
+        يمسّ عدّاد الخسارات المتتالية. تحتاجه الإغلاقات **الجزئية** (حصاد
+        أزواج شبكة التحوّط مثلاً): هي نتيجة مالية حقيقية يجب أن تدخل الحد
+        اليومي، لكنها ليست "نتيجة صفقة مكتملة" — واحتسابها في السلسلة يجعل
+        كل حصاد صغير رابح يصفّر عدّاد الخسارات فيُبطل قفل الخسارات المتتالية
+        عملياً.
+        """
         self.state = self._roll_periods(self.state)
         self.state["daily_pnl"] = float(self.state["daily_pnl"]) + pnl
         self.state["weekly_pnl"] = float(self.state["weekly_pnl"]) + pnl
         self.state["trades_today"] = int(self.state["trades_today"]) + 1
+
+        if not count_streak:
+            self._save()
+            return
 
         if pnl < 0:
             self.state["consecutive_losses"] = int(self.state["consecutive_losses"]) + 1

@@ -1,0 +1,113 @@
+; ═══════════════════════════════════════════════════════════════
+; GoldDragon_HedgeGrid_v4 — BALANCED (الافتراضي الموصى به)
+; ضعه في: MQL5\Presets\  ثم Load من نافذة إعدادات الـEA
+;
+; لماذا BALANCED لا TURBO:
+;   نسبة العمولة من الربح تعتمد فقط على كم دولاراً تلتقطه كل صفقة:
+;     حركة 0.21$ → العمولة تلتهم 33% من الربح
+;     حركة 0.35$ → 20%
+;     حركة 0.50$ → 14%   ← هذا الإعداد
+;   TURBO يستهدف ~0.2$ لكل صفقة، فيُسلّم ثلث ربحك للوسيط، ولا يمرّ من
+;   بوابة الجدوى المدمجة (سيرفض الـEA الإقلاع ويشرح السبب في Experts).
+;
+; نسبة النجاح المطلوبة للتعادل بهذا الإعداد: ~74% — وتبقى ثابتة عند هذه
+; القيمة مهما نما الحساب، لأن اللوت والهدف وحد الخسارة كلها نِسَب من
+; الـEquity. (في v3 كانت تزحف من 34% عند 16$ إلى 99% عند 2611$.)
+;
+; ⚠️ أدنى إيكويتي يبقى عنده اللوت قابلاً للتحجيم = 500$
+;    (VOLUME_MIN 0.01 ÷ InpRiskLotPer1000USD 0.02 × 1000).
+;    تحته يُسمَّر اللوت عند الحد الأدنى وتصير مخاطرتك الفعلية أعلى من
+;    المضبوطة — الـEA يحذّرك بهذا صراحةً عند الإقلاع.
+; ═══════════════════════════════════════════════════════════════
+
+InpSpeedMode=2
+
+; ── اللوت يتحجّم مع رأس المال (إصلاح v4 الجوهري) ──
+InpAutoLot=true
+InpRiskLotPer1000USD=0.02
+InpManualLot=0.01
+InpMaxAutoLot=1.0
+
+; ── الشبكة ──
+InpMaxLevels=20
+InpPendingPerSide=1
+
+; ── الخطوة التكيّفية ──
+InpAdaptiveStep=true
+InpAtrPeriod=14
+InpAtrTimeframe=1
+InpAtrStepMult=0.55
+InpMinGridStepUSD=1.5
+InpMaxGridStepUSD=5.0
+
+; ── الهدف: نِسَب من الـEquity لا دولارات ثابتة ──
+InpBaseTargetPercent=0.20
+InpTargetPerLevelPercent=0.08
+InpMaxBasketTargetPercent=2.0
+InpCostSafetyMult=1.6
+; ⚠️ اقرأ عمولتك الفعلية من عقد وسيطك وضعها هنا — رقم خاطئ = هدف خاطئ
+; في كل صفقة. الـEA يتعلّمها من سجلّك تلقائياً بعد ~20 صفقة ويتجاوز هذا.
+InpAssumedCostPerLot=7.0
+
+; ── بوابة الجدوى: ترفض الإقلاع بإعدادات خاسرة رياضياً ──
+InpMaxBreakevenWinRate=85.0
+InpAllowUnviableParams=false
+
+; ── حصاد الأزواج ──
+InpPairHarvestEnabled=true
+InpMinPositionsForHarvest=4
+InpMinPairProfitUSD=0.08
+InpMaxHarvestPerTick=2
+
+; ── قفل الربح المتحرّك ──
+InpBasketTrailEnabled=true
+InpTrailArmMult=1.5
+InpTrailGivebackUSD=0.35
+
+; ── الحماية (كلها نِسَب من الـEquity) ──
+; 1.5% لا 3%: الطرف الآخر من معادلة التعادل — عند 3% لا يمرّ أي نمط.
+InpMaxBasketLossPercent=1.5
+InpDailyLossLimitPercent=5.0
+InpWeeklyLossLimitPercent=10.0
+InpMaxDrawdownPercent=15.0
+InpConsecutiveLossesLock=3
+InpConsecutiveLossesLockHours=48
+InpDailyProfitTargetPercent=0.0
+
+; ── حارس الهامش ──
+InpMinMarginLevelPercent=400.0
+InpCriticalMarginLevelPercent=200.0
+
+; ── حارس انفجار التقلّب ──
+InpBurstGuardEnabled=true
+InpAtrBaselineBars=60
+InpBurstAtrMult=2.2
+InpBurstFreezeSeconds=90
+
+; ── فلاتر التنفيذ ──
+InpMaxSpreadUSD=0.6
+InpActionThrottleMs=1000
+InpCooldownSecondsAfterClose=5
+InpAvoidRollover=true
+InpRolloverStartHour=23
+InpRolloverEndHour=1
+
+; ── فلتر الاتجاه ──
+InpTrendGuardEnabled=true
+InpMaxDirectionalLevels=6
+
+; ── Kill Switch نهائي ──
+InpKillSwitchEnabled=true
+InpKillDrawdownPausePercent=20.0
+InpKillDrawdownPauseHours=24
+InpKillDrawdownTerminatePercent=50.0
+InpKillDailyLossTerminatePercent=10.0
+InpKillConsecutiveLossesTerminate=5
+
+InpResetKillSwitch=false
+
+; ── عام ──
+InpMagic=20260817
+InpSlippagePoints=25
+InpReinitAfterClose=true
+InpVerboseLog=false
