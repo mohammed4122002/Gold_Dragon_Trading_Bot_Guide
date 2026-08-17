@@ -410,6 +410,39 @@ double HoursToMidnight()
 }
 
 //+------------------------------------------------------------------------+
+//| تشخيص أخطاء التنفيذ — retcode وحده لا يكفي                              |
+//|                                                                         |
+//| retcode=0 ليس رمزاً صالحاً في MT5 (الرموز تبدأ من 10004). ظهوره يعني أنّ  |
+//| الطلب فشل **قبل وصوله إلى السيرفر**، والسبب الحقيقي يكون في             |
+//| GetLastError() وحده: 4752 التداول الآلي معطّل، 4756 طلب غير صالح،        |
+//| 4753 لا مركز بهذا الرقم، 4109/4110 التداول ممنوع… إلخ. طباعة retcode     |
+//| دون _LastError تُخفي السبب تماماً وتجعل التشخيص مستحيلاً.                |
+//+------------------------------------------------------------------------+
+string TradeFailureText()
+{
+   int    rc  = (int)trade.ResultRetcode();
+   int    err = GetLastError();
+   string txt = StringFormat("retcode=%d (%s) | _LastError=%d",
+                             rc, trade.ResultRetcodeDescription(), err);
+   if(rc == 0)
+   {
+      txt += " ← الطلب لم يصل للسيرفر أصلاً.";
+      switch(err)
+      {
+         case 4752: txt += " السبب: التداول الآلي معطّل — فعّل زر AlgoTrading."; break;
+         case 4753: txt += " السبب: المركز/الأمر لم يعد موجوداً (نُفِّذ أو أُغلق للتو)."; break;
+         case 4756: txt += " السبب: طلب تداول غير صالح (سعر/حجم/نوع تعبئة)."; break;
+         case 4110:
+         case 4109: txt += " السبب: التداول غير مسموح لهذا الـEA — راجع خصائص الـEA."; break;
+         case 0:    txt += " لا خطأ مسجَّل — غالباً الأمر نُفِّذ بين القراءة والتنفيذ."; break;
+         default:   txt += " راجع رمز الخطأ في توثيق MQL5."; break;
+      }
+   }
+   ResetLastError();
+   return txt;
+}
+
+//+------------------------------------------------------------------------+
 //| تطبيع الحجم والسعر                                                      |
 //+------------------------------------------------------------------------+
 double NormalizeVolume(const double raw)
@@ -683,18 +716,18 @@ double CloseBasketAndCancelPending(const string reason)
          closedPnl += RealizedPnLForPosition(posIds[i]);
          closedCount++;
       }
-      else
-      {
-         Print("⚠️ فشل إغلاق المركز #", posTickets[i], " retcode=", trade.ResultRetcode(),
+      // مركز اختفى بين لقطة القراءة ولحظة الإغلاق ليس فشلاً: أُغلق للتو
+      // (حصاد، SL/TP، إغلاق يدوي). التحذير عنه ضجيج يُخفي الأعطال الحقيقية.
+      else if(PositionSelectByTicket(posTickets[i]))
+         Print("⚠️ فشل إغلاق المركز #", posTickets[i], " — ", TradeFailureText(),
                " — سيبقى مفتوحاً ضمن السلة الحالية");
-      }
    }
 
    ulong pendTickets[]; int pendTypes[]; double pendPrices[];
    int pendCount = CollectOurPending(pendTickets, pendTypes, pendPrices);
    for(int i = 0; i < pendCount; i++)
-      if(!trade.OrderDelete(pendTickets[i]))
-         Print("⚠️ فشل إلغاء الأمر المعلّق #", pendTickets[i], " retcode=", trade.ResultRetcode());
+      if(!trade.OrderDelete(pendTickets[i]) && OrderSelect(pendTickets[i]))
+         Print("⚠️ فشل إلغاء الأمر المعلّق #", pendTickets[i], " — ", TradeFailureText());
 
    if(closedCount > 0)
    {
@@ -770,7 +803,7 @@ int HarvestPairs(const ulong &tickets[], const ulong &posIds[])
       else
       {
          okBoth = false;
-         Print("⚠️ حصاد: فشل إغلاق الرابح #", tickets[wIdx], " retcode=", trade.ResultRetcode());
+         Print("⚠️ حصاد: فشل إغلاق الرابح #", tickets[wIdx], " — ", TradeFailureText());
       }
 
       if(trade.PositionClose(tickets[lIdx]))
@@ -778,7 +811,7 @@ int HarvestPairs(const ulong &tickets[], const ulong &posIds[])
       else
       {
          okBoth = false;
-         Print("⚠️ حصاد: فشل إغلاق الخاسر #", tickets[lIdx], " retcode=", trade.ResultRetcode());
+         Print("⚠️ حصاد: فشل إغلاق الخاسر #", tickets[lIdx], " — ", TradeFailureText());
       }
 
       used[wIdx] = true;
@@ -1182,14 +1215,24 @@ bool EnsureSide(const bool isBuy, const double &posEntries[], const int &posType
       }
 
    bool ok = isBuy
-      ? trade.BuyStop(gLot, nextPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GDG3")
-      : trade.SellStop(gLot, nextPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GDG3");
+      ? trade.BuyStop(gLot, nextPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GDG4")
+      : trade.SellStop(gLot, nextPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GDG4");
 
    if(!ok)
-      Log(StringFormat("⚠️ فشل %s عند %s retcode=%d — %s",
-                       (isBuy ? "BuyStop" : "SellStop"),
-                       DoubleToString(nextPrice, _Digits),
-                       trade.ResultRetcode(), trade.ResultRetcodeDescription()));
+   {
+      // فشل التسليح لا يجوز أن يكون صامتاً أبداً: بدون هذا السطر تبقى
+      // الشبكة تعيد المحاولة إلى ما لا نهاية دون أن يعرف المستخدم السبب —
+      // وهو بالضبط ما حدث حين كان هذا التحذير مرهوناً بـ InpVerboseLog.
+      // يُطبع مرة كل 60 ثانية كحدّ أقصى حتى لا يُغرق السجل.
+      datetime nowSec  = TimeCurrent();
+      datetime lastLog = (datetime)GVGet("last_send_err_log", 0.0);
+      if(nowSec - lastLog >= 60)
+      {
+         GVSet("last_send_err_log", (double)nowSec);
+         Print("⚠️ فشل ", (isBuy ? "BuyStop" : "SellStop"), " عند ",
+               DoubleToString(nextPrice, _Digits), " حجم ", gLot, " — ", TradeFailureText());
+      }
+   }
    return ok;
 }
 
@@ -1316,10 +1359,39 @@ int OnInit()
       return(INIT_FAILED);
    }
 
+   // ── فحص مسبق لأسباب retcode=0 الشائعة ──
+   // كلها تجعل OrderSend يفشل قبل الوصول للسيرفر، فيبقى retcode صفراً
+   // ويستحيل تشخيصها من السجل وحده. اكتشافها هنا أرخص بكثير.
+   bool tradeBlocked = false;
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
-      Print("⚠️ التداول الآلي معطّل في الطرفية — فعّل زر AlgoTrading.");
+   {
+      Print("⛔ التداول الآلي معطّل في الطرفية — فعّل زر AlgoTrading أعلى النافذة. ",
+            "بدونه سيفشل كل أمر بـ retcode=0 (_LastError=4752).");
+      tradeBlocked = true;
+   }
+   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
+   {
+      Print("⛔ التداول ممنوع لهذا الـEA تحديداً — فعّل \"Allow Algo Trading\" ",
+            "في تبويب Common بخصائص الـEA عند إرفاقه.");
+      tradeBlocked = true;
+   }
    if(!AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
-      Print("⚠️ الوسيط يمنع تداول الـEA على هذا الحساب.");
+   {
+      Print("⛔ الوسيط يمنع تداول الـEA على هذا الحساب.");
+      tradeBlocked = true;
+   }
+   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
+   {
+      Print("⛔ التداول معطّل على هذا الحساب (قد يكون للقراءة فقط).");
+      tradeBlocked = true;
+   }
+   if(!SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE))
+   {
+      Print("⛔ الرمز ", _Symbol, " معطّل للتداول لدى وسيطك (SYMBOL_TRADE_MODE=DISABLED).");
+      tradeBlocked = true;
+   }
+   if(tradeBlocked)
+      Print("   ⚠️ الـEA سيعمل لكن كل أمر سيفشل حتى تُحلّ النقاط أعلاه.");
 
    ApplySpeedMode();
 
@@ -1391,6 +1463,14 @@ int OnInit()
          " | أرضية الوسيط ", DoubleToString(floorStep, 2), "$");
    Print("التكلفة: ~", DoubleToString(costPerLot, 2), "$ لكل لوت دورة كاملة → ",
          DoubleToString(costPerTrade, 3), "$ لكل مركز عند لوتك.");
+   // نوع التعبئة سبب شائع لرفض الأوامر المعلّقة تحديداً: بعض الوسطاء
+   // يقبلون FOK للأوامر السوقية ويرفضونه للمعلّقة. طباعته تُسرّع التشخيص.
+   Print("التنفيذ: نوع التعبئة ", EnumToString(trade.RequestTypeFilling()),
+         " | أوضاع الرمز المدعومة=",
+         (int)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE),
+         " | STOPS_LEVEL=", (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL),
+         " | FREEZE=", (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL),
+         " | VOLUME_MIN=", SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN));
    Print("سلة نموذجية (", SAMPLE_N, " مراكز): هدف ", DoubleToString(sampleTarget, 2),
          "$ − عمولة ", DoubleToString(sampleComm, 2), "$ = صافي ",
          DoubleToString(sampleNet, 2), "$ | حركة مطلوبة ",
