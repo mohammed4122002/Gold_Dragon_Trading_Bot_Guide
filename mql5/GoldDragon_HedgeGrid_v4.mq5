@@ -21,14 +21,23 @@
 //  نجاح فقط فطارت، وعند 2611$ صارت تحتاج 99% — أي أنّ خسارة سلة واحدة تمحو
 //  84 سلة رابحة. لم تكن استراتيجية ناجحة، بل عدّاداً تنازلياً لم يصل دوره.
 //
-//  ═══ إصلاح v4: كل شيء يتحجّم مع رأس المال، أو لا شيء يتحجّم ═══
+//  ═══ إصلاح v4: إمّا يتحجّم كل شيء، أو يثبت كل شيء — بلا خلط ═══
 //
-//  [1] **اللوت يتحجّم** مع الـEquity (InpRiskLotPer1000USD). بلوت ثابت،
-//      ربح السلة بالدولار يبقى ثابتاً بينما حدّ الخسارة ينمو — وهذا بالضبط
-//      مصدر الخلل. الآن الثلاثة (اللوت، الهدف، حدّ الخسارة) نِسَب من نفس
-//      الـEquity، فتبقى نسبة النجاح المطلوبة ثابتة ~74% مهما نما الحساب.
+//  [1] **نمط القياس (InpSizingMode) يفرض الاتساق بنيوياً:**
 //
-//  [2] **الهدف نسبة مئوية** من الـEquity لا رقم دولار ثابت.
+//      SIZING_FIXED   → لوت ثابت + الهدف وكل حدود الخسارة **بالدولار**
+//      SIZING_PERCENT → لوت متحجّم + الهدف وكل الحدود **نِسَب من Equity**
+//
+//      الخلط بينهما (لوت ثابت + حدّ نسبة مئوية) هو حرفياً ما قتل v3. الآن
+//      كل الحدود تمرّ عبر طبقة واحدة (LimitUSD) تحسمها بالدولار حسب النمط،
+//      فلا يوجد مكان واحد في الكود يقارن نسبة بدولار.
+//
+//      نمط FIXED (الافتراضي) مناسب لمن يريد سقف خسارة يومي محدّداً نقداً
+//      مثل "أوقف عند خسارة 10$": المخاطرة تبقى ثابتة بالدولار مهما نما
+//      الحساب. ونمط PERCENT للنمو المركّب.
+//
+//  [2] **الهدف بنفس وحدة حدود الخسارة** دائماً — دولار مع دولار، أو نسبة
+//      مع نسبة. هذا وحده يُثبّت نسبة التعادل بدل أن تزحف.
 //
 //  [3] **إصلاح خطأ عمولة ×2.** v3 كانت تحسب `CostPerLot × lot × 0.5`
 //      باعتبارها "نصف دورة". لكن POSITION_PROFIT في MT5 **لا يتضمّن العمولة
@@ -148,19 +157,37 @@ enum ENUM_SPEED_MODE
    MODE_MANUAL   = 3    // استخدم القيم اليدوية أدناه كما هي
 };
 
+//──────────────────────────── نمط القياس (حاسم) ────────────────────────────
+//
+// خلط "لوت ثابت" مع "حدود نسبة مئوية" هو حرفياً الخلل الذي قتل v3: الربح
+// بالدولار يبقى ثابتاً بينما ينمو حدّ الخسارة مع الحساب، فتزحف نسبة التعادل
+// نحو المستحيل. لذلك النمط هنا **يفرض الاتساق** ولا يسمح بالخلط:
+//
+//   SIZING_FIXED   → لوت ثابت + الهدف وحدود الخسارة كلها **بالدولار**
+//   SIZING_PERCENT → لوت متحجّم + الهدف وحدود الخسارة كلها **نِسَب من Equity**
+//
+// كلاهما متّسق رياضياً. الفرق العملي: FIXED يبقي المخاطرة ثابتة بالدولار
+// مهما نما الحساب (نمو خطّي، ومناسب لمن يريد سقف خسارة يومي محدّد نقداً)،
+// وPERCENT يجعلها تتناسب مع الحساب (نمو مركّب، لكن الخسارة بالدولار تكبر).
+enum ENUM_SIZING_MODE
+{
+   SIZING_FIXED   = 0,  // لوت ثابت + كل الحدود بالدولار
+   SIZING_PERCENT = 1   // لوت متحجّم + كل الحدود نِسَب من الـEquity
+};
+
 //──────────────────────────────── الإعدادات ────────────────────────────────
 input group "== نمط السرعة =="
 // MODE_BALANCED هو الافتراضي الآن لا TURBO: عند خطوة ضيقة جداً تلتهم العمولة
 // 33–70% من الربح الإجمالي (راجع جدول الحركة/العمولة في رأس الملف).
 input ENUM_SPEED_MODE InpSpeedMode = MODE_BALANCED;
 
-input group "== حجم اللوت — يتحجّم مع رأس المال (إصلاح v4 الجوهري) =="
-// لوت ثابت + حدّ خسارة نسبة مئوية = الخلل الذي قتل v3. عندما يتحجّم اللوت
-// مع الـEquity يتحجّم الربح بالدولار معه، فتبقى نسبة النجاح المطلوبة ثابتة.
-input bool   InpAutoLot             = true;   // false = استخدم InpManualLot ثابتاً (سلوك v3)
-input double InpRiskLotPer1000USD   = 0.02;   // لوت لكل 1000$ إيكويتي (0.02 = 0.01 لوت لكل 500$)
-input double InpManualLot           = 0.01;   // يُستخدم فقط إن InpAutoLot=false
-input double InpMaxAutoLot          = 1.00;   // سقف صلب مهما نما الحساب
+input group "== نمط القياس — يفرض الاتساق ويمنع خلل v3 =="
+input ENUM_SIZING_MODE InpSizingMode = SIZING_FIXED;  // FIXED: لوت ثابت + حدود بالدولار
+
+input group "== حجم اللوت =="
+input double InpManualLot           = 0.01;   // اللوت الثابت — يُستخدم في نمط SIZING_FIXED
+input double InpRiskLotPer1000USD   = 0.02;   // نمط PERCENT فقط: لوت لكل 1000$ إيكويتي
+input double InpMaxAutoLot          = 1.00;   // نمط PERCENT فقط: سقف صلب مهما نما الحساب
 
 input group "== الشبكة =="
 input int    InpMaxLevels           = 20;     // سقف كلي: صفقات مفتوحة + أوامر معلّقة
@@ -174,12 +201,18 @@ input double InpAtrStepMult         = 0.30;   // step = ATR × هذا
 input double InpMinGridStepUSD      = 0.60;   // أضيق خطوة مسموحة بالدولار
 input double InpMaxGridStepUSD      = 4.00;   // أوسع خطوة مسموحة بالدولار
 
-input group "== هدف ربح السلة — نسبة من الـEquity (إصلاح v4) =="
-// v3 كانت أرقام دولار ثابتة بينما حدّ الخسارة نسبة مئوية — فكانت نسبة
-// التعادل تزحف من 34% إلى 99% مع نمو الحساب. الآن الطرفان بنفس المقياس.
+input group "== هدف ربح السلة — بالدولار (نمط SIZING_FIXED) =="
+// مضبوطة بحيث تعطي نسبة تعادل ~74% مع InpMaxBasketLossUSD=3.0 الافتراضية.
+input double InpBaseTargetUSD         = 0.45; // هدف السلة عند مركز واحد
+input double InpTargetPerLevelUSD     = 0.20; // يُضاف لكل مركز إضافي
+input double InpMaxBasketTargetUSD    = 12.0; // سقف مهما كبرت السلة
+
+input group "== هدف ربح السلة — نسبة من الـEquity (نمط SIZING_PERCENT) =="
 input double InpBaseTargetPercent     = 0.20; // % من الـEquity عند مركز واحد
 input double InpTargetPerLevelPercent = 0.08; // % تُضاف لكل مركز إضافي
 input double InpMaxBasketTargetPercent= 2.00; // سقف % مهما كبرت السلة
+
+input group "== التكلفة =="
 input double InpCostSafetyMult        = 1.60; // الهدف ≥ تكلفة إغلاق السلة × هذا
 input double InpAssumedCostPerLot     = 7.00; // تكلفة ذهاب+إياب لـ 1.00 لوت قبل التعلّم
 
@@ -199,17 +232,26 @@ input bool   InpBasketTrailEnabled  = true;
 input double InpTrailArmMult        = 1.50;   // يُسلَّح عند العائم ≥ الهدف × هذا
 input double InpTrailGivebackUSD    = 0.35;   // يُغلق فور تراجع العائم عن قمته بهذا
 
-input group "== حماية (كلها على Equity) =="
-// خُفِّض من 3.0% (v3) إلى 1.5%: الطرف الآخر من معادلة التعادل. عند 3% لا
-// يمرّ أي نمط من بوابة الجدوى — وهذا ليس تشدّداً، بل هو السبب الحسابي
-// المباشر لخسارة v3. راجع جدول نسب التعادل في رأس الملف.
+input group "== حماية بالدولار (نمط SIZING_FIXED) =="
+// 3$ للسلة مع 10$ يومياً = تحتمل ~3 سلال خاسرة قبل توقف اليوم، وتعطي نسبة
+// تعادل ~74% مع هدف 0.45$+0.20$/مستوى. خفضها يزيد صمود اليوم لكنه يرفع
+// حصة العمولة من الربح (عند 1.5$ تلتهم العمولة 44% بدل 28%).
+input double InpMaxBasketLossUSD      = 3.0;   // $ — قطع مبكر لهذه السلة
+input double InpDailyLossLimitUSD     = 10.0;  // $ — إيقاف حتى منتصف الليل (سيرفر)
+input double InpWeeklyLossLimitUSD    = 30.0;  // $ — إيقاف أسبوع كامل (3 أيام سيئة)
+input double InpMaxDrawdownUSD        = 30.0;  // $ من قمة الـEquity التاريخية
+input double InpDailyProfitTargetUSD  = 0.0;   // $ ربح يومي يوقف التداول (0 = معطّل)
+
+input group "== حماية بالنسبة (نمط SIZING_PERCENT) =="
 input double InpMaxBasketLossPercent  = 1.5;   // % من الـEquity — قطع مبكر لهذه السلة
 input double InpDailyLossLimitPercent = 5.0;   // % — إيقاف حتى منتصف الليل (سيرفر)
 input double InpWeeklyLossLimitPercent= 10.0;  // % — إيقاف أسبوع كامل
 input double InpMaxDrawdownPercent    = 15.0;  // % من قمة الـEquity التاريخية
+input double InpDailyProfitTargetPercent = 0.0;// % ربح يومي يوقف التداول (0 = معطّل)
+
+input group "== حماية مشتركة (النمطان معاً) =="
 input int    InpConsecutiveLossesLock = 3;     // خسارات متتالية تقفل التداول
 input int    InpConsecutiveLossesLockHours = 48;
-input double InpDailyProfitTargetPercent = 0.0;// % ربح يومي يوقف التداول (0 = معطّل)
 
 input group "== حارس الهامش =="
 input double InpMinMarginLevelPercent      = 400.0; // تحته: يتوقف توسيع الشبكة
@@ -233,13 +275,19 @@ input group "== فلتر الاتجاه =="
 input bool   InpTrendGuardEnabled     = true;
 input int    InpMaxDirectionalLevels  = 6;    // أقصى صفقات متتالية بنفس الاتجاه
 
-input group "== Kill Switch نهائي =="
+input group "== Kill Switch نهائي — بالدولار (نمط SIZING_FIXED) =="
+// معايَرة على حدّ يومي 10$: الإيقاف المؤقت عند 4 أيام سيئة، والإنهاء عند 6.
+input double InpKillDrawdownPauseUSD     = 40.0;   // $ — إيقاف مؤقت يُفكّ تلقائياً
+input double InpKillDrawdownTerminateUSD = 60.0;   // $ — إنهاء نهائي
+input double InpKillDailyLossTerminateUSD= 20.0;   // $ — إنهاء نهائي (ضعف الحد اليومي)
+
+input group "== Kill Switch نهائي — بالنسبة (نمط SIZING_PERCENT) =="
 input bool   InpKillSwitchEnabled            = true;
 input double InpKillDrawdownPausePercent     = 20.0;  // % — إيقاف مؤقت يُفكّ تلقائياً
-input int    InpKillDrawdownPauseHours       = 24;
+input int    InpKillDrawdownPauseHours       = 24;    // (مشترك بين النمطين)
 input double InpKillDrawdownTerminatePercent = 50.0;  // % — إنهاء نهائي
 input double InpKillDailyLossTerminatePercent= 10.0;  // % — إنهاء نهائي
-input int    InpKillConsecutiveLossesTerminate = 5;   // إنهاء نهائي
+input int    InpKillConsecutiveLossesTerminate = 5;   // إنهاء نهائي (مشترك)
 
 input group "== إعادة تعيين يدوية =="
 input bool   InpResetKillSwitch     = false;  // أعدها false فوراً بعد الفكّ
@@ -265,8 +313,10 @@ int      gAtrHandle   = INVALID_HANDLE;
 double   gMinStep       = 0.60;
 double   gMaxStep       = 4.00;
 double   gAtrMult       = 0.30;
-double   gBaseTargetPct = 0.20;
+double   gBaseTargetPct = 0.20;   // نمط PERCENT
 double   gTargetPerPct  = 0.08;
+double   gBaseTargetUSD = 0.45;   // نمط FIXED
+double   gTargetPerUSD  = 0.20;
 int      gThrottleMs    = 250;
 int      gPendPerSide   = 2;
 
@@ -790,6 +840,51 @@ double MarginLevel()
 }
 
 //+------------------------------------------------------------------------+
+//| طبقة الحدود الفعّالة — كل حدّ يُحسم بالدولار حسب نمط القياس               |
+//|                                                                         |
+//| كل بقية الكود يتعامل مع دولارات فقط، فلا مكان يخلط نسبة بدولار. هذا ما   |
+//| يمنع تكرار خلل v3 بنيوياً بدل الاعتماد على انتباه المستخدم.              |
+//+------------------------------------------------------------------------+
+bool IsFixedSizing() { return InpSizingMode == SIZING_FIXED; }
+
+double LimitUSD(const double fixedUSD, const double percentOfEquity)
+{
+   if(IsFixedSizing())
+      return fixedUSD;
+   return CurrentEquity() * percentOfEquity / 100.0;
+}
+
+double MaxBasketLossUSD()
+{ return LimitUSD(InpMaxBasketLossUSD, InpMaxBasketLossPercent); }
+
+double DailyLossLimitUSD()
+{ return LimitUSD(InpDailyLossLimitUSD, InpDailyLossLimitPercent); }
+
+double WeeklyLossLimitUSD()
+{ return LimitUSD(InpWeeklyLossLimitUSD, InpWeeklyLossLimitPercent); }
+
+double MaxDrawdownUSD()
+{ return LimitUSD(InpMaxDrawdownUSD, InpMaxDrawdownPercent); }
+
+double DailyProfitTargetUSD()
+{ return LimitUSD(InpDailyProfitTargetUSD, InpDailyProfitTargetPercent); }
+
+double KillDrawdownPauseUSD()
+{ return LimitUSD(InpKillDrawdownPauseUSD, InpKillDrawdownPausePercent); }
+
+double KillDrawdownTerminateUSD()
+{ return LimitUSD(InpKillDrawdownTerminateUSD, InpKillDrawdownTerminatePercent); }
+
+double KillDailyLossTerminateUSD()
+{ return LimitUSD(InpKillDailyLossTerminateUSD, InpKillDailyLossTerminatePercent); }
+
+// الانخفاض عن القمة بالدولار — يقابل EquityDrawdown() النسبية
+double DrawdownUSD()
+{
+   return MathMax(PeakEquity() - CurrentEquity(), 0.0);
+}
+
+//+------------------------------------------------------------------------+
 //| [B] هدف السلة — نسبة من الـEquity، ولا ينزل تحت تكلفة إغلاقها أبداً       |
 //|                                                                         |
 //| هذا قلب إصلاح v4: الهدف يتحجّم مع رأس المال تماماً كما يتحجّم حدّ الخسارة  |
@@ -799,11 +894,19 @@ double MarginLevel()
 double DynamicBasketTarget(const int posCount)
 {
    int n = MathMax(posCount, 1);
+   double target;
 
-   double pct = gBaseTargetPct + gTargetPerPct * (n - 1);
-   pct = MathMin(pct, InpMaxBasketTargetPercent);
-
-   double target = CurrentEquity() * pct / 100.0;
+   if(IsFixedSizing())
+   {
+      target = gBaseTargetUSD + gTargetPerUSD * (n - 1);
+      target = MathMin(target, InpMaxBasketTargetUSD);
+   }
+   else
+   {
+      double pct = gBaseTargetPct + gTargetPerPct * (n - 1);
+      pct = MathMin(pct, InpMaxBasketTargetPercent);
+      target = CurrentEquity() * pct / 100.0;
+   }
 
    // أرضية التكلفة: إغلاق n مركز يكلّف n × **دورة كاملة** (لا نصفها كما في
    // v3). الهدف يجب أن يتجاوزها بمعامل أمان، وإلا فكل "ربح" تحققه هو خسارة
@@ -824,29 +927,35 @@ bool DailyGuardAllows(const ulong &posTickets[], string &reason)
    if(IsLocked())        { reason = "قفل نشط";           return false; }
    if(equity <= 0.0)     { reason = "Equity غير صالح";   return false; }
 
-   double dailyPnl = EffectiveDailyPnL(posTickets);
-   double dailyPct = dailyPnl / equity;
+   // كل المقارنات بالدولار — الحدود مُحسَّمة مسبقاً حسب نمط القياس، فلا
+   // مكان هنا يخلط نسبة بدولار (وهو أصل خلل v3).
+   double dailyPnl   = EffectiveDailyPnL(posTickets);   // محقق + عائم
+   double dailyLimit = DailyLossLimitUSD();
 
-   if(dailyPct <= -InpDailyLossLimitPercent / 100.0)
+   if(dailyLimit > 0.0 && dailyPnl <= -dailyLimit)
    {
-      Lock(HoursToMidnight(), StringFormat("خسارة يومية %.2f%% (محقق + عائم)", dailyPct * 100.0));
-      reason = "تجاوز حد الخسارة اليومية";
+      Lock(HoursToMidnight(),
+           StringFormat("خسارة يومية %.2f$ بلغت الحد %.2f$ (محقق + عائم)",
+                        dailyPnl, dailyLimit));
+      reason = StringFormat("تجاوز حد الخسارة اليومية (%.2f$ من %.2f$)", dailyPnl, dailyLimit);
       return false;
    }
 
    // قفل الربح اليومي — يحمي يوماً ممتازاً من أن يتحوّل إلى يوم عادي
-   if(InpDailyProfitTargetPercent > 0.0 &&
-      dailyPct >= InpDailyProfitTargetPercent / 100.0)
+   double profitTarget = DailyProfitTargetUSD();
+   if(profitTarget > 0.0 && dailyPnl >= profitTarget)
    {
-      Lock(HoursToMidnight(), StringFormat("تحقّق هدف الربح اليومي %.2f%%", dailyPct * 100.0));
+      Lock(HoursToMidnight(), StringFormat("تحقّق هدف الربح اليومي %.2f$", dailyPnl));
       reason = "تحقّق هدف الربح اليومي";
       return false;
    }
 
-   double weeklyPct = EffectiveWeeklyPnL(posTickets) / equity;
-   if(weeklyPct <= -InpWeeklyLossLimitPercent / 100.0)
+   double weeklyPnl   = EffectiveWeeklyPnL(posTickets);
+   double weeklyLimit = WeeklyLossLimitUSD();
+   if(weeklyLimit > 0.0 && weeklyPnl <= -weeklyLimit)
    {
-      Lock(24 * 7, StringFormat("خسارة أسبوعية %.2f%% (محقق + عائم)", weeklyPct * 100.0));
+      Lock(24 * 7, StringFormat("خسارة أسبوعية %.2f$ بلغت الحد %.2f$ (محقق + عائم)",
+                                weeklyPnl, weeklyLimit));
       reason = "تجاوز حد الخسارة الأسبوعية";
       return false;
    }
@@ -858,10 +967,11 @@ bool DailyGuardAllows(const ulong &posTickets[], string &reason)
       return false;
    }
 
-   double dd = EquityDrawdown();
-   if(dd >= InpMaxDrawdownPercent / 100.0)
+   double ddUSD  = DrawdownUSD();
+   double ddLimit= MaxDrawdownUSD();
+   if(ddLimit > 0.0 && ddUSD >= ddLimit)
    {
-      reason = StringFormat("Drawdown %.2f%% تجاوز الحد", dd * 100.0);
+      reason = StringFormat("Drawdown %.2f$ تجاوز الحد %.2f$", ddUSD, ddLimit);
       return false;
    }
 
@@ -914,23 +1024,30 @@ void KillSwitchAutoCheck(const ulong &posTickets[])
 
    RollPeriods();
 
-   double equity = MathMax(CurrentEquity(), 1.0);
-   double dd     = EquityDrawdown();
-   double dailyLossPct = -MathMin(EffectiveDailyPnL(posTickets), 0.0) / equity;
-   int    losses = (int)GVGet("consecutive_losses", 0.0);
+   // كل الحدود بالدولار عبر طبقة الحدود الفعّالة — نفس منطق DailyGuardAllows
+   double ddUSD        = DrawdownUSD();
+   double dailyLossUSD = -MathMin(EffectiveDailyPnL(posTickets), 0.0);
+   int    losses       = (int)GVGet("consecutive_losses", 0.0);
 
-   if(dd >= InpKillDrawdownTerminatePercent / 100.0)
+   double ddTerminate  = KillDrawdownTerminateUSD();
+   double dailyTerm    = KillDailyLossTerminateUSD();
+   double ddPause      = KillDrawdownPauseUSD();
+
+   if(ddTerminate > 0.0 && ddUSD >= ddTerminate)
       TriggerKillSwitch(KILL_LEVEL_TERMINATE,
-                        StringFormat("Equity Drawdown %.2f%% تجاوز حد الإنهاء", dd * 100.0));
-   else if(dailyLossPct >= InpKillDailyLossTerminatePercent / 100.0)
+                        StringFormat("Equity Drawdown %.2f$ تجاوز حد الإنهاء %.2f$",
+                                     ddUSD, ddTerminate));
+   else if(dailyTerm > 0.0 && dailyLossUSD >= dailyTerm)
       TriggerKillSwitch(KILL_LEVEL_TERMINATE,
-                        StringFormat("خسارة يومية %.2f%% تجاوزت حد الإنهاء", dailyLossPct * 100.0));
+                        StringFormat("خسارة يومية %.2f$ تجاوزت حد الإنهاء %.2f$",
+                                     dailyLossUSD, dailyTerm));
    else if(losses >= InpKillConsecutiveLossesTerminate)
       TriggerKillSwitch(KILL_LEVEL_TERMINATE,
                         StringFormat("%d خسارات متتالية", losses));
-   else if(dd >= InpKillDrawdownPausePercent / 100.0)
+   else if(ddPause > 0.0 && ddUSD >= ddPause)
       TriggerKillSwitch(KILL_LEVEL_PAUSE,
-                        StringFormat("Equity Drawdown %.2f%% تجاوز حد الإيقاف المؤقت", dd * 100.0));
+                        StringFormat("Equity Drawdown %.2f$ تجاوز حد الإيقاف المؤقت %.2f$",
+                                     ddUSD, ddPause));
 }
 
 //+------------------------------------------------------------------------+
@@ -1087,29 +1204,35 @@ void ApplySpeedMode()
    gAtrMult       = InpAtrStepMult;
    gBaseTargetPct = InpBaseTargetPercent;
    gTargetPerPct  = InpTargetPerLevelPercent;
+   gBaseTargetUSD = InpBaseTargetUSD;
+   gTargetPerUSD  = InpTargetPerLevelUSD;
    gThrottleMs    = InpActionThrottleMs;
    gPendPerSide   = InpPendingPerSide;
 
-   // النِسَب أدناه مضبوطة بحيث تبقى نسبة التعادل ~74% عند InpRiskLotPer1000USD
-   // الافتراضية، مع اختلاف الحركة الملتقطة لكل صفقة بين الأنماط: كلما ضاقت
-   // الخطوة ارتفعت حصة العمولة من الربح (راجع الجدول في رأس الملف).
+   // القيم أدناه مضبوطة لنسبة تعادل ~74–84% في النمطين، مع اختلاف الحركة
+   // الملتقطة لكل صفقة: كلما ضاقت الخطوة ارتفعت حصة العمولة من الربح
+   // (راجع جدول الحركة/العمولة في رأس الملف). قيم USD معايَرة على
+   // InpMaxBasketLossUSD=3.0، وقيم % معايَرة على InpMaxBasketLossPercent=1.5.
    switch(InpSpeedMode)
    {
       case MODE_TURBO:   // حركة ~0.2$/صفقة → العمولة ~33% من الربح الإجمالي
          gMinStep = 0.50;  gMaxStep = 2.50;  gAtrMult = 0.22;
          gBaseTargetPct = 0.10; gTargetPerPct = 0.04;
+         gBaseTargetUSD = 0.30; gTargetPerUSD = 0.14;
          gThrottleMs = 200;  gPendPerSide = 2;
          break;
 
       case MODE_FAST:    // حركة ~0.35$/صفقة → العمولة ~20%
          gMinStep = 0.80;  gMaxStep = 3.50;  gAtrMult = 0.32;
          gBaseTargetPct = 0.14; gTargetPerPct = 0.056;
+         gBaseTargetUSD = 0.38; gTargetPerUSD = 0.17;
          gThrottleMs = 400;  gPendPerSide = 2;
          break;
 
       case MODE_BALANCED: // حركة ~0.5$/صفقة → العمولة ~14% (الأفضل اقتصادياً)
          gMinStep = 1.50;  gMaxStep = 5.00;  gAtrMult = 0.55;
          gBaseTargetPct = 0.20; gTargetPerPct = 0.08;
+         gBaseTargetUSD = 0.45; gTargetPerUSD = 0.20;
          gThrottleMs = 1000; gPendPerSide = 1;
          break;
 
@@ -1132,7 +1255,7 @@ void ApplySpeedMode()
 //+------------------------------------------------------------------------+
 void RefreshLot()
 {
-   if(!InpAutoLot)
+   if(IsFixedSizing())
    {
       gLot = NormalizeVolume(InpManualLot);
       return;
@@ -1142,11 +1265,12 @@ void RefreshLot()
    gLot = NormalizeVolume(raw);   // NormalizeVolume يرفعه إلى VOLUME_MIN عند اللزوم
 }
 
-// أدنى إيكويتي يبقى عنده اللوت قابلاً للتحجيم. تحته يُسمَّر اللوت عند
-// VOLUME_MIN فتنكسر كل النِسَب وتصير المخاطرة الفعلية أعلى من المضبوطة.
+// أدنى إيكويتي يبقى عنده اللوت قابلاً للتحجيم (نمط PERCENT فقط). تحته
+// يُسمَّر اللوت عند VOLUME_MIN فتنكسر كل النِسَب وتصير المخاطرة الفعلية
+// أعلى من المضبوطة. لا معنى له في نمط FIXED — اللوت ثابت أصلاً بالتعريف.
 double MinViableEquity()
 {
-   if(!InpAutoLot || InpRiskLotPer1000USD <= 0.0)
+   if(IsFixedSizing() || InpRiskLotPer1000USD <= 0.0)
       return 0.0;
    double vmin = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    return vmin * 1000.0 / InpRiskLotPer1000USD;
@@ -1165,7 +1289,7 @@ double BreakevenWinRate(const int sampleBasketSize)
    double target = DynamicBasketTarget(n);
    double comm   = FullCostPerPosition() * n;
    double net    = target - comm;
-   double maxLoss= CurrentEquity() * InpMaxBasketLossPercent / 100.0;
+   double maxLoss= MaxBasketLossUSD();
 
    if(net <= 0.0 || maxLoss <= 0.0)
       return 100.0;
@@ -1242,7 +1366,7 @@ int OnInit()
    double sampleTarget = DynamicBasketTarget(SAMPLE_N);
    double sampleComm   = FullCostPerPosition() * SAMPLE_N;
    double sampleNet    = sampleTarget - sampleComm;
-   double maxLoss      = equity * InpMaxBasketLossPercent / 100.0;
+   double maxLoss      = MaxBasketLossUSD();
    double breakevenWR  = BreakevenWinRate(SAMPLE_N);
    double movePerTrade = (gLot > 0.0)
                        ? sampleTarget / (SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE)
@@ -1251,8 +1375,17 @@ int OnInit()
 
    Print("═══════════ GoldDragon HedgeGrid v4 ═══════════");
    Print("الرمز ", _Symbol, " | إيكويتي ", DoubleToString(equity, 2),
-         "$ | لوت ", gLot, (InpAutoLot ? " (تلقائي — يتحجّم مع الحساب)" : " (يدوي ثابت)"),
-         " | نمط ", EnumToString(InpSpeedMode));
+         "$ | لوت ", gLot, (IsFixedSizing() ? " (ثابت)" : " (يتحجّم مع الحساب)"),
+         " | قياس ", EnumToString(InpSizingMode),
+         " | سرعة ", EnumToString(InpSpeedMode));
+   Print("الحدود الفعّالة: سلة ", DoubleToString(maxLoss, 2),
+         "$ | يومي ", DoubleToString(DailyLossLimitUSD(), 2),
+         "$ | أسبوعي ", DoubleToString(WeeklyLossLimitUSD(), 2),
+         "$ | DD ", DoubleToString(MaxDrawdownUSD(), 2), "$",
+         (maxLoss > 0.0
+          ? StringFormat("  → %.1f سلة خاسرة تبلغ الحدّ اليومي",
+                         DailyLossLimitUSD() / maxLoss)
+          : ""));
    Print("الخطوة: أدنى ", DoubleToString(gMinStep, 2), "$ | أقصى ",
          DoubleToString(gMaxStep, 2), "$ | ATR×", DoubleToString(gAtrMult, 2),
          " | أرضية الوسيط ", DoubleToString(floorStep, 2), "$");
@@ -1268,7 +1401,7 @@ int OnInit()
             "$ أضيق من أرضية الوسيط ", DoubleToString(floorStep, 2),
             "$ — ستُزاح الأوامر تلقائياً، وسيكون التباعد الفعلي أوسع مما تتوقع.");
 
-   if(InpAutoLot && minEquity > 0.0 && equity < minEquity)
+   if(minEquity > 0.0 && equity < minEquity)
       Print("⚠️⚠️ إيكويتيك ", DoubleToString(equity, 2), "$ تحت الحد الأدنى ",
             DoubleToString(minEquity, 2), "$ الذي يبقى عنده اللوت قابلاً للتحجيم. ",
             "اللوت مسمّر عند VOLUME_MIN، أي أنّ مخاطرتك الفعلية **أعلى** من المضبوطة ",
@@ -1288,9 +1421,18 @@ int OnInit()
             DoubleToString(sampleNet > 0 ? maxLoss / sampleNet : 999, 0),
             " سلة رابحة. هذا ذيل سالب لا تنجو منه أي استراتيجية.");
       Print("   الحلول (بترتيب الأفضلية):");
-      Print("     1. ارفع InpRiskLotPer1000USD (يرفع الربح بالدولار مع نفس النِسَب)");
-      Print("     2. ارفع InpBaseTargetPercent / InpTargetPerLevelPercent");
-      Print("     3. اخفض InpMaxBasketLossPercent (قطع مبكر أضيق)");
+      if(IsFixedSizing())
+      {
+         Print("     1. ارفع InpBaseTargetUSD / InpTargetPerLevelUSD (هدف أكبر لكل سلة)");
+         Print("     2. اخفض InpMaxBasketLossUSD (قطع مبكر أضيق — لكن سلال أقل قبل الحدّ اليومي)");
+         Print("     3. ارفع InpManualLot (يرفع الربح بالدولار — يرفع المخاطرة أيضاً)");
+      }
+      else
+      {
+         Print("     1. ارفع InpRiskLotPer1000USD (يرفع الربح بالدولار مع نفس النِسَب)");
+         Print("     2. ارفع InpBaseTargetPercent / InpTargetPerLevelPercent");
+         Print("     3. اخفض InpMaxBasketLossPercent (قطع مبكر أضيق)");
+      }
       Print("     4. InpAllowUnviableParams=true لتجاوز البوابة — على مسؤوليتك وحدك");
       if(!InpAllowUnviableParams)
          return(INIT_FAILED);
@@ -1299,10 +1441,11 @@ int OnInit()
    else if(breakevenWR > 80.0)
       Print("   ⚠️ ذيل سالب واضح — راقب نتيجة الشهر لا نتيجة اليوم.");
 
-   Print("الحمايات: يومي ", InpDailyLossLimitPercent, "% | أسبوعي ",
-         InpWeeklyLossLimitPercent, "% | DD ", InpMaxDrawdownPercent,
-         "% | هامش حرج ", InpCriticalMarginLevelPercent,
-         "% | KillSwitch ", (InpKillSwitchEnabled ? "مفعّل" : "معطّل"),
+   Print("Kill Switch: DD إيقاف ", DoubleToString(KillDrawdownPauseUSD(), 2),
+         "$ | DD إنهاء ", DoubleToString(KillDrawdownTerminateUSD(), 2),
+         "$ | خسارة يومية إنهاء ", DoubleToString(KillDailyLossTerminateUSD(), 2),
+         "$ | هامش حرج ", InpCriticalMarginLevelPercent,
+         "% | الحالة ", (InpKillSwitchEnabled ? "مفعّل" : "معطّل"),
          (KillSwitchActive() ? " (نشط الآن ⛔)" : ""));
    Print("═══════════════════════════════════════════════");
 
@@ -1374,7 +1517,8 @@ void OnTick()
    bool basketClosed = false;
 
    // 3) قطع مبكر لخسارة السلة العائمة — قبل أي منطق ربح
-   if(posCount > 0 && equity > 0 && (-floating / equity) >= InpMaxBasketLossPercent / 100.0)
+   double basketLossCap = MaxBasketLossUSD();
+   if(posCount > 0 && basketLossCap > 0.0 && -floating >= basketLossCap)
    {
       CloseBasketAndCancelPending("basket_loss_cutoff");
       basketClosed = true;

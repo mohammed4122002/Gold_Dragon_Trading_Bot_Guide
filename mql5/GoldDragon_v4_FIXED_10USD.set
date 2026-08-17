@@ -1,0 +1,142 @@
+; ═══════════════════════════════════════════════════════════════
+; GoldDragon_HedgeGrid_v4 — لوت ثابت 0.01 + توقف عند خسارة 10$ يومياً
+; ضعه في: MQL5\Presets\  ثم Load من نافذة إعدادات الـEA
+;
+; ── ما يفعله هذا الإعداد ──
+;   • لوت ثابت 0.01 لا يتغيّر مهما نما أو تراجع الحساب
+;   • كل حدود الخسارة **بالدولار** لا بالنسبة (نمط SIZING_FIXED)
+;   • يتوقف حتى منتصف الليل (وقت السيرفر) عند خسارة 10$ في اليوم
+;   • خسارة السلة الواحدة محدودة بـ 3$ → ~3.3 سلة خاسرة تبلغ الحدّ اليومي
+;
+; ── لماذا 3$ للسلة تحديداً ──
+;   خسارة سلة أصغر = صمود أطول في اليوم، لكن العمولة تلتهم حصة أكبر من
+;   ربحك (عند 1.5$ تلتهم 44% بدل 28%). و3$ هي التوازن الذي يبقي نسبة
+;   النجاح المطلوبة للتعادل عند ~74% وهي قابلة للتحقيق في سوق متذبذب.
+;
+; ── الأرقام المتوقعة على حساب 100$ ──
+;   هدف السلة (6 مراكز): 1.45$ − عمولة 0.42$ = صافي 1.03$
+;   نسبة النجاح للتعادل: 74.4%  ✅ (تمرّ من بوابة الجدوى عند 85%)
+;   خسارة السلة 3$ = 3% من الحساب | الحدّ اليومي 10$ = ~10% من الحساب
+;
+; ⚠️ 10$ يومياً على حساب 100$ يعني 10% في اليوم. هذا سقف **عالٍ** نسبةً
+;    لحجم حسابك: ثلاثة أيام سيئة متتالية = ثلث الحساب. الرقم رقمك وأنا
+;    نفّذته كما طلبت، لكن اعرف ما يعنيه. لتخفيفه: اخفض InpDailyLossLimitUSD
+;    إلى 5 مع إبقاء الباقي كما هو.
+;
+; ⚠️ InpAssumedCostPerLot=7.0 تخمين. اقرأ عمولتك الفعلية من عقد وسيطك
+;    وضعها هنا — الـEA يتعلّمها تلقائياً من سجلّك بعد ~20 صفقة ويتجاوز
+;    هذا الرقم، لكن أول 20 صفقة تُحسَب على أساسه.
+; ═══════════════════════════════════════════════════════════════
+
+; ── نمط القياس: يفرض أن يكون كل شيء بالدولار (يمنع خلل v3 بنيوياً) ──
+InpSizingMode=0
+
+; ── السرعة: BALANCED = أفضل اقتصاديات (العمولة 28% لا 44%) ──
+InpSpeedMode=2
+
+; ── اللوت الثابت ──
+InpManualLot=0.01
+InpRiskLotPer1000USD=0.02
+InpMaxAutoLot=1.0
+
+; ── الشبكة ──
+InpMaxLevels=20
+InpPendingPerSide=1
+
+; ── الخطوة التكيّفية ──
+InpAdaptiveStep=true
+InpAtrPeriod=14
+InpAtrTimeframe=1
+InpAtrStepMult=0.55
+InpMinGridStepUSD=1.5
+InpMaxGridStepUSD=5.0
+
+; ── الهدف بالدولار (المستخدم في نمط FIXED) ──
+InpBaseTargetUSD=0.45
+InpTargetPerLevelUSD=0.20
+InpMaxBasketTargetUSD=12.0
+
+; ── الهدف بالنسبة (غير مستخدم في نمط FIXED — يُترك للرجوع) ──
+InpBaseTargetPercent=0.20
+InpTargetPerLevelPercent=0.08
+InpMaxBasketTargetPercent=2.0
+
+; ── التكلفة ──
+InpCostSafetyMult=1.6
+InpAssumedCostPerLot=7.0
+
+; ── بوابة الجدوى: ترفض الإقلاع بإعدادات خاسرة رياضياً ──
+InpMaxBreakevenWinRate=85.0
+InpAllowUnviableParams=false
+
+; ── حصاد الأزواج ──
+InpPairHarvestEnabled=true
+InpMinPositionsForHarvest=4
+InpMinPairProfitUSD=0.08
+InpMaxHarvestPerTick=2
+
+; ── قفل الربح المتحرّك ──
+InpBasketTrailEnabled=true
+InpTrailArmMult=1.5
+InpTrailGivebackUSD=0.35
+
+; ══ الحماية بالدولار — هذه هي الفعّالة في نمط FIXED ══
+InpMaxBasketLossUSD=3.0
+InpDailyLossLimitUSD=10.0
+InpWeeklyLossLimitUSD=30.0
+InpMaxDrawdownUSD=30.0
+InpDailyProfitTargetUSD=0.0
+
+; ── الحماية بالنسبة (غير مستخدمة في نمط FIXED) ──
+InpMaxBasketLossPercent=1.5
+InpDailyLossLimitPercent=5.0
+InpWeeklyLossLimitPercent=10.0
+InpMaxDrawdownPercent=15.0
+InpDailyProfitTargetPercent=0.0
+
+; ── مشترك بين النمطين ──
+InpConsecutiveLossesLock=3
+InpConsecutiveLossesLockHours=48
+
+; ── حارس الهامش ──
+InpMinMarginLevelPercent=400.0
+InpCriticalMarginLevelPercent=200.0
+
+; ── حارس انفجار التقلّب ──
+InpBurstGuardEnabled=true
+InpAtrBaselineBars=60
+InpBurstAtrMult=2.2
+InpBurstFreezeSeconds=90
+
+; ── فلاتر التنفيذ ──
+InpMaxSpreadUSD=0.6
+InpActionThrottleMs=1000
+InpCooldownSecondsAfterClose=5
+InpAvoidRollover=true
+InpRolloverStartHour=23
+InpRolloverEndHour=1
+
+; ── فلتر الاتجاه ──
+InpTrendGuardEnabled=true
+InpMaxDirectionalLevels=6
+
+; ══ Kill Switch بالدولار — الفعّال في نمط FIXED ══
+InpKillDrawdownPauseUSD=40.0
+InpKillDrawdownTerminateUSD=60.0
+InpKillDailyLossTerminateUSD=20.0
+
+; ── Kill Switch بالنسبة (غير مستخدم في نمط FIXED) ──
+InpKillSwitchEnabled=true
+InpKillDrawdownPausePercent=20.0
+InpKillDrawdownPauseHours=24
+InpKillDrawdownTerminatePercent=50.0
+InpKillDailyLossTerminatePercent=10.0
+InpKillConsecutiveLossesTerminate=5
+
+InpResetKillSwitch=false
+
+; ── عام ──
+InpMagic=20260817
+InpSlippagePoints=25
+InpReinitAfterClose=true
+InpVerboseLog=false
