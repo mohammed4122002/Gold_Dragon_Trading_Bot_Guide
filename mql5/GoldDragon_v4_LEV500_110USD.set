@@ -1,0 +1,150 @@
+; ═══════════════════════════════════════════════════════════════
+; GoldDragon_HedgeGrid_v4 — مضبوط على: رافعة 1:500 | ~110$ | لوت 0.01
+;                                       توقف عند خسارة 10$ يومياً
+; ضعه في: MQL5\Presets\  ثم Load من نافذة إعدادات الـEA
+;
+; ── ما تغيّر عن الإعداد السابق ولماذا ──
+;
+; 1) MODE_FAST بدل MODE_BALANCED (InpSpeedMode=1)
+;    خطوة أضيق (0.80–3.50$ بدل 1.50–5.00$) + سلّم أمرين لكل جانب بدل أمر
+;    واحد ⇒ صفقات أكثر بوضوح، وهو ما طلبته.
+;    الثمن الصادق: العمولة تلتهم ~20% من الربح الإجمالي بدل ~14%، ونسبة
+;    النجاح المطلوبة للتعادل ترتفع من 74.4% إلى 78.7%. ما زالت تمرّ من
+;    بوابة الجدوى (الحد 85%)، لكنها هامش أضيق.
+;    ← لو أردت الأأمن اقتصادياً: غيّر InpSpeedMode إلى 2 (BALANCED) فقط.
+;    ← لا تستخدم 0 (TURBO): سيرفض الـEA الإقلاع، العمولة تبتلع 33%.
+;
+; 2) InpMaxLevels=12 بدل 20
+;    سعة حسابك الفعلية عند 1:500: هامش المركز 8.78$، وإيكويتي 109$ يحتمل
+;    ~5 مراكز غير محوّطة قبل تجميد التوسّع، و~8 قبل الإغلاق الاضطراري.
+;    مع التحوّط المتوازن تُلغى معظم الهوامش فترتفع السعة كثيراً، لذلك
+;    تُرك السقف 12 وجُعلت حرّاس الهامش هي المُحدِّد الحقيقي الديناميكي.
+;
+; 3) حرّاس الهامش: تجميد عند 250% وإغلاق عند 150% (كانا 400% و200%)
+;    عند 400% كان يتجمّد بعد 3 مراكز فقط ولا تتشكّل شبكة. و150% يبقى
+;    بعيداً بأمان عن Stop Out (عادة 50%) وعن نداء الهامش (100%).
+;
+; ── الأرقام المتوقعة ──
+;   سلة 6 مراكز: هدف 1.23$ − عمولة 0.42$ = صافي 0.81$ | تعادل 78.7% ✅
+;   سلة 8 مراكز: هدف 1.57$ − عمولة 0.56$ = صافي 1.01$ | تعادل 74.8% ✅
+;   خسارة السلة 3$ → ~3.3 سلة خاسرة تبلغ الحدّ اليومي 10$
+;
+; ⚠️ 10$ يومياً على 110$ = ~9% في اليوم. ثلاثة أيام سيئة = ثلث الحساب.
+;    الرقم رقمك ونُفّذ كما طلبت. لتخفيفه: InpDailyLossLimitUSD=5 وحده.
+;
+; ⚠️ InpAssumedCostPerLot=7.0 تخمين — اقرأ عمولتك الحقيقية من عقد وسيطك.
+;    الـEA يتعلّمها من سجلّك بعد ~20 صفقة ويتجاوز هذا الرقم تلقائياً.
+; ═══════════════════════════════════════════════════════════════
+
+; ── نمط القياس: كل شيء بالدولار (لوت ثابت + حدود بالدولار) ──
+InpSizingMode=0
+
+; ── السرعة: FAST = صفقات أكثر (اقرأ البند 1 أعلاه) ──
+InpSpeedMode=1
+
+; ── اللوت الثابت ──
+InpManualLot=0.01
+InpRiskLotPer1000USD=0.02
+InpMaxAutoLot=1.0
+
+; ── الشبكة: سقف مناسب لسعة 1:500 على ~110$ ──
+InpMaxLevels=12
+InpPendingPerSide=2
+
+; ── الخطوة التكيّفية ──
+InpAdaptiveStep=true
+InpAtrPeriod=14
+InpAtrTimeframe=1
+InpAtrStepMult=0.32
+InpMinGridStepUSD=0.8
+InpMaxGridStepUSD=3.5
+
+; ── الهدف بالدولار (الفعّال في نمط FIXED) ──
+InpBaseTargetUSD=0.38
+InpTargetPerLevelUSD=0.17
+InpMaxBasketTargetUSD=12.0
+
+; ── الهدف بالنسبة (غير مستخدم في نمط FIXED) ──
+InpBaseTargetPercent=0.20
+InpTargetPerLevelPercent=0.08
+InpMaxBasketTargetPercent=2.0
+
+; ── التكلفة ──
+InpCostSafetyMult=1.6
+InpAssumedCostPerLot=7.0
+
+; ── بوابة الجدوى ──
+InpMaxBreakevenWinRate=85.0
+InpAllowUnviableParams=false
+
+; ── حصاد الأزواج: يحرّر هامشاً ويسرّع دوران الصفقات ──
+InpPairHarvestEnabled=true
+InpMinPositionsForHarvest=4
+InpMinPairProfitUSD=0.08
+InpMaxHarvestPerTick=2
+
+; ── قفل الربح المتحرّك ──
+InpBasketTrailEnabled=true
+InpTrailArmMult=1.5
+InpTrailGivebackUSD=0.35
+
+; ══ الحماية بالدولار — الفعّالة في نمط FIXED ══
+InpMaxBasketLossUSD=3.0
+InpDailyLossLimitUSD=10.0
+InpWeeklyLossLimitUSD=30.0
+InpMaxDrawdownUSD=30.0
+InpDailyProfitTargetUSD=0.0
+
+; ── الحماية بالنسبة (غير مستخدمة في نمط FIXED) ──
+InpMaxBasketLossPercent=1.5
+InpDailyLossLimitPercent=5.0
+InpWeeklyLossLimitPercent=10.0
+InpMaxDrawdownPercent=15.0
+InpDailyProfitTargetPercent=0.0
+
+; ── مشترك ──
+InpConsecutiveLossesLock=3
+InpConsecutiveLossesLockHours=48
+
+; ══ حرّاس الهامش — معايَرة على 1:500 (اقرأ البند 3 أعلاه) ══
+InpMinMarginLevelPercent=250.0
+InpCriticalMarginLevelPercent=150.0
+
+; ── حارس انفجار التقلّب ──
+InpBurstGuardEnabled=true
+InpAtrBaselineBars=60
+InpBurstAtrMult=2.2
+InpBurstFreezeSeconds=90
+
+; ── فلاتر التنفيذ ──
+InpMaxSpreadUSD=0.6
+InpActionThrottleMs=400
+InpCooldownSecondsAfterClose=5
+InpAvoidRollover=true
+InpRolloverStartHour=23
+InpRolloverEndHour=1
+
+; ── فلتر الاتجاه: يقيّد أقصى انكشاف باتجاه واحد = أقصى استهلاك هامش ──
+InpTrendGuardEnabled=true
+InpMaxDirectionalLevels=5
+
+; ══ Kill Switch بالدولار ══
+InpKillDrawdownPauseUSD=40.0
+InpKillDrawdownTerminateUSD=60.0
+InpKillDailyLossTerminateUSD=20.0
+
+; ── Kill Switch بالنسبة (غير مستخدم في نمط FIXED) ──
+InpKillSwitchEnabled=true
+InpKillDrawdownPausePercent=20.0
+InpKillDrawdownPauseHours=24
+InpKillDrawdownTerminatePercent=50.0
+InpKillDailyLossTerminatePercent=10.0
+InpKillConsecutiveLossesTerminate=5
+
+InpResetKillSwitch=false
+
+; ── عام ──
+InpMagic=20260817
+InpSlippagePoints=25
+InpReinitAfterClose=true
+InpVerboseLog=false

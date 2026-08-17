@@ -1481,6 +1481,35 @@ int OnInit()
             "$ أضيق من أرضية الوسيط ", DoubleToString(floorStep, 2),
             "$ — ستُزاح الأوامر تلقائياً، وسيكون التباعد الفعلي أوسع مما تتوقع.");
 
+   // ── سعة الهامش: كم مستوى يحتمله حسابك فعلياً ──
+   // شبكة التحوّط تحتاج مراكز متزامنة كثيرة. حساب برافعة منخفضة يستهلك
+   // هامشه بعد مركز أو مركزين فيتجمّد التوسّع، وتبدو المشكلة وكأنها في
+   // الإعدادات بينما هي سقف هامش صلب لا يُحلّ ببرمجة. هذا التقرير يكشفها
+   // فوراً بدل أن تُكتشف بعد ساعة من شبكة عالقة عند مركز واحد.
+   double marginPerPos = 0.0;
+   double askNow = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   if(OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, gLot, askNow, marginPerPos)
+      && marginPerPos > 0.0)
+   {
+      // أقصى عدد مراكز قبل أن يهبط Margin Level تحت عتبة تجميد التوسّع
+      int capFreeze = (int)MathFloor(equity /
+                      (marginPerPos * InpMinMarginLevelPercent / 100.0));
+      int capClose  = (int)MathFloor(equity /
+                      (marginPerPos * InpCriticalMarginLevelPercent / 100.0));
+      Print("سعة الهامش: رافعة 1:", (int)AccountInfoInteger(ACCOUNT_LEVERAGE),
+            " | هامش المركز ", DoubleToString(marginPerPos, 2), "$ → ",
+            capFreeze, " مركز قبل تجميد التوسّع (", DoubleToString(InpMinMarginLevelPercent, 0),
+            "%) و", capClose, " قبل الإغلاق الاضطراري (",
+            DoubleToString(InpCriticalMarginLevelPercent, 0), "%)");
+      Print("   (حساب Hedging: المراكز المتقابلة تُلغي بعضها في حساب الهامش ",
+            "عند أغلب الوسطاء، فالسعة الفعلية أعلى من هذا الرقم المتحفّظ)");
+
+      if(capFreeze < 4)
+         Print("⚠️⚠️ حسابك يحتمل ", capFreeze, " مركزاً فقط قبل تجميد التوسّع — ",
+               "هذا لا يكفي لشبكة تحوّط. شبكة بمركز أو مركزين ليست شبكة. ",
+               "الحل: رافعة أعلى أو رأس مال أكبر — لا يوجد إعداد يلتف على سقف الهامش.");
+   }
+
    if(minEquity > 0.0 && equity < minEquity)
       Print("⚠️⚠️ إيكويتيك ", DoubleToString(equity, 2), "$ تحت الحد الأدنى ",
             DoubleToString(minEquity, 2), "$ الذي يبقى عنده اللوت قابلاً للتحجيم. ",
