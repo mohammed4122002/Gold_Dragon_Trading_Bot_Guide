@@ -317,6 +317,7 @@ double   gBaseTargetPct = 0.20;   // نمط PERCENT
 double   gTargetPerPct  = 0.08;
 double   gBaseTargetUSD = 0.45;   // نمط FIXED
 double   gTargetPerUSD  = 0.20;
+int      gPendFill      = -1;     // فهرس وضع التعبئة الناجح للأوامر المعلّقة (-1 = لم يُكتشف)
 int      gThrottleMs    = 250;
 int      gPendPerSide   = 2;
 
@@ -440,6 +441,13 @@ string TradeFailureText()
    }
    ResetLastError();
    return txt;
+}
+
+// تُستدعى قبل كل إغلاق: الإغلاق أمر **سوقي**، فيلزمه وضع تعبئة الرمز
+// (FOK/IOC) لا وضع الأوامر المعلّقة الذي يضبطه PlacePending أدناه.
+void UseMarketFilling()
+{
+   trade.SetTypeFillingBySymbol(_Symbol);
 }
 
 //+------------------------------------------------------------------------+
@@ -707,6 +715,8 @@ double CloseBasketAndCancelPending(const string reason)
    ulong posTickets[]; ulong posIds[]; double entries[]; int posTypes[]; datetime times[];
    int posCount = CollectOurPositions(posTickets, posIds, entries, posTypes, times);
 
+   UseMarketFilling();   // الإغلاق أمر سوقي — لا يستخدم وضع الأوامر المعلّقة
+
    double closedPnl = 0.0;
    int closedCount  = 0;
    for(int i = 0; i < posCount; i++)
@@ -774,6 +784,8 @@ int HarvestPairs(const ulong &tickets[], const ulong &posIds[])
               - closeCost;
       used[i] = false;                // صالح للحصاد
    }
+
+   UseMarketFilling();   // الحصاد إغلاق سوقي — لا يستخدم وضع الأوامر المعلّقة
 
    int harvested = 0;
    for(int round = 0; round < InpMaxHarvestPerTick; round++)
@@ -1131,6 +1143,57 @@ bool InRolloverWindow()
 }
 
 //+------------------------------------------------------------------------+
+//| نوع التعبئة: الأوامر المعلّقة تختلف عن السوقية                            |
+//|                                                                         |
+//| سبب فشل كل الأوامر في تشغيل حقيقي: SetTypeFillingBySymbol() تقرأ         |
+//| SYMBOL_FILLING_MODE وتختار FOK — لكن ذلك الحقل يصف تعبئة الأوامر         |
+//| **السوقية** فقط. الأوامر المعلّقة تحتاج ORDER_FILLING_RETURN لدى أغلب     |
+//| الوسطاء، وتطبيق FOK عليها يجعل الترمنال يرفض الطلب محلياً قبل إرساله      |
+//| (_LastError=4756 مع retcode=0 — بلا أي رسالة مفيدة من السيرفر).          |
+//|                                                                         |
+//| بدل تثبيت وضع واحد وافتراض أنه يناسب كل الوسطاء، نجرّب الأوضاع بالترتيب   |
+//| ونحفظ الناجح في gPendFill فلا نكرّر الاستكشاف. إن توقّف الوضع المحفوظ عن   |
+//| العمل (تغيّر إعداد الوسيط) نُعيد الاستكشاف تلقائياً.                      |
+//+------------------------------------------------------------------------+
+bool SendPending(const bool isBuy, const double price)
+{
+   return isBuy
+      ? trade.BuyStop(gLot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GDG4")
+      : trade.SellStop(gLot, price, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GDG4");
+}
+
+bool PlacePending(const bool isBuy, const double price)
+{
+   ENUM_ORDER_TYPE_FILLING modes[3];
+   modes[0] = ORDER_FILLING_RETURN;   // الصحيح للأوامر المعلّقة لدى أغلب الوسطاء
+   modes[1] = ORDER_FILLING_IOC;
+   modes[2] = ORDER_FILLING_FOK;
+
+   // وضع معروف ناجح: جرّبه وحده أولاً
+   if(gPendFill >= 0)
+   {
+      trade.SetTypeFilling(modes[gPendFill]);
+      if(SendPending(isBuy, price))
+         return true;
+      Print("ℹ️ توقّف وضع التعبئة ", EnumToString(modes[gPendFill]),
+            " عن العمل للأوامر المعلّقة — إعادة استكشاف.");
+      gPendFill = -1;
+   }
+
+   for(int i = 0; i < 3; i++)
+   {
+      trade.SetTypeFilling(modes[i]);
+      if(SendPending(isBuy, price))
+      {
+         gPendFill = i;
+         Print("✅ وضع التعبئة المعتمد للأوامر المعلّقة: ", EnumToString(modes[i]));
+         return true;
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------------+
 //| [F] تمديد جانب واحد — الآن سلّم أوامر لا أمر واحد                        |
 //+------------------------------------------------------------------------+
 bool EnsureSide(const bool isBuy, const double &posEntries[], const int &posTypes[],
@@ -1214,9 +1277,7 @@ bool EnsureSide(const bool isBuy, const double &posEntries[], const int &posType
          return false;
       }
 
-   bool ok = isBuy
-      ? trade.BuyStop(gLot, nextPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GDG4")
-      : trade.SellStop(gLot, nextPrice, _Symbol, 0, 0, ORDER_TIME_GTC, 0, "GDG4");
+   bool ok = PlacePending(isBuy, nextPrice);
 
    if(!ok)
    {
